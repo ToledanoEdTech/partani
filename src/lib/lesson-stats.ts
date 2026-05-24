@@ -181,3 +181,264 @@ export function isTeacherReminderEligible(params: {
 
   return { eligible: true, missing };
 }
+
+/* -----------------------------------------------------------------------
+ * Analytics primitives
+ *
+ * The functions below power the admin "Overview & Statistics" dashboard.
+ * They are pure, deterministic, and work on calendar-date strings
+ * (YYYY-MM-DD) so they're stable regardless of the host runtime's
+ * timezone — the caller is responsible for picking a sensible [start,
+ * end] range (typically derived from `Asia/Jerusalem` "today").
+ * ----------------------------------------------------------------------- */
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Returns 0=Sun..6=Sat for a YYYY-MM-DD calendar-date string. */
+export function getDayOfWeekForDateStr(dateStr: string): number {
+  const m = ISO_DATE_RE.exec(dateStr);
+  if (!m) throw new Error(`Invalid YYYY-MM-DD: ${dateStr}`);
+  const [y, mo, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+}
+
+/** All calendar dates in `[startStr, endStr]` inclusive (YYYY-MM-DD). */
+export function enumerateDatesBetween(startStr: string, endStr: string): string[] {
+  if (endStr < startStr) return [];
+  const out: string[] = [];
+  let cur = startStr;
+  while (cur <= endStr) {
+    out.push(cur);
+    cur = addDaysToDateStr(cur, 1);
+  }
+  return out;
+}
+
+/**
+ * Returns the list of Sunday-start dates (YYYY-MM-DD) for every IL week
+ * that overlaps `[startStr, endStr]` — including weeks where the Sunday
+ * itself falls before `startStr`.
+ */
+export function enumerateWeekStartsBetween(startStr: string, endStr: string): string[] {
+  if (endStr < startStr) return [];
+  // Snap startStr back to its Sunday.
+  const startDow = getDayOfWeekForDateStr(startStr);
+  let cursor = addDaysToDateStr(startStr, -startDow);
+  const out: string[] = [];
+  while (cursor <= endStr) {
+    out.push(cursor);
+    cursor = addDaysToDateStr(cursor, 7);
+  }
+  return out;
+}
+
+/** All YYYY-MM-DD dates in `[startStr, endStr]` that fall on the given Hebrew day name. */
+export function getExpectedDatesForScheduleDay(
+  scheduleDay: string,
+  startStr: string,
+  endStr: string
+): string[] {
+  const targetDow = DAY_MAP[scheduleDay];
+  if (targetDow === undefined) return [];
+  return enumerateDatesBetween(startStr, endStr).filter(
+    (d) => getDayOfWeekForDateStr(d) === targetDow
+  );
+}
+
+export interface RangeComplianceCounts {
+  expected: number;
+  reported: number;
+  completed: number;
+  missed: number;
+  unreported: number; // expected - reported, floored at 0
+  compliancePct: number; // reported / expected (0..100), 100 if expected===0
+}
+
+interface ReportIndexEntry {
+  scheduleId: string;
+  teacherId: string;
+  date: string;
+  status: 'completed' | 'missed';
+}
+
+/** Index reports by `scheduleId|date` for O(1) "was this expected lesson reported?" lookup. */
+export function indexReportsBySlotDate(
+  reports: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[]
+): Map<string, ReportIndexEntry> {
+  const map = new Map<string, ReportIndexEntry>();
+  for (const r of reports) {
+    map.set(`${r.scheduleId}|${r.date}`, {
+      scheduleId: r.scheduleId,
+      teacherId: r.teacherId,
+      date: r.date,
+      status: r.status,
+    });
+  }
+  return map;
+}
+
+/**
+ * Per-teacher compliance counts across an inclusive date range.
+ *
+ * Semantics:
+ *   • `expected` — for each of the teacher's current schedule entries,
+ *     count how many dates in `[startStr, endStr]` fall on that entry's
+ *     day-of-week. Assumes the schedule was active throughout the range.
+ *   • `reported` — number of (scheduleId, date) pairs in the range that
+ *     have a matching report document, regardless of status.
+ *   • `completed` / `missed` — split of `reported` by report status.
+ *   • `unreported` — `max(0, expected - reported)`. Approximation of
+ *     "lessons the teacher was supposed to report but didn't".
+ *   • `compliancePct` — `reported / expected * 100`, rounded, capped at 100.
+ */
+export function getTeacherComplianceInRange(params: {
+  teacherId: string;
+  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day'>[];
+  reports: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[];
+  startStr: string;
+  endStr: string;
+  reportIndex?: Map<string, ReportIndexEntry>;
+}): RangeComplianceCounts {
+  const { teacherId, schedules, startStr, endStr } = params;
+  const reportIndex = params.reportIndex ?? indexReportsBySlotDate(params.reports);
+
+  let expected = 0;
+  let reported = 0;
+  let completed = 0;
+  let missed = 0;
+
+  const teacherSchedules = schedules.filter((s) => s.teacherId === teacherId);
+  for (const slot of teacherSchedules) {
+    const dates = getExpectedDatesForScheduleDay(slot.day, startStr, endStr);
+    expected += dates.length;
+    for (const date of dates) {
+      const entry = reportIndex.get(`${slot.id}|${date}`);
+      if (entry) {
+        reported++;
+        if (entry.status === 'completed') completed++;
+        else if (entry.status === 'missed') missed++;
+      }
+    }
+  }
+
+  const unreported = Math.max(0, expected - reported);
+  const compliancePct =
+    expected === 0 ? 100 : Math.min(100, Math.round((reported / expected) * 100));
+
+  return { expected, reported, completed, missed, unreported, compliancePct };
+}
+
+export interface WeeklyTrendPoint {
+  weekStart: string; // Sunday YYYY-MM-DD
+  weekEnd: string; // Friday YYYY-MM-DD (six-day school week)
+  expected: number;
+  reported: number;
+  completed: number;
+  missed: number;
+}
+
+/**
+ * Per-week expected/reported counts across the analytics range.
+ *
+ * For the purpose of trend charts we treat each IL week as Sun–Fri
+ * (the school's working week). Saturday lessons aren't part of any
+ * schedule in this product, so excluding Saturday avoids a confusing
+ * "100% missed" trailing column.
+ */
+export function getWeeklyTrend(params: {
+  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day'>[];
+  reports: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[];
+  startStr: string;
+  endStr: string;
+  reportIndex?: Map<string, ReportIndexEntry>;
+}): WeeklyTrendPoint[] {
+  const { schedules, startStr, endStr } = params;
+  const reportIndex = params.reportIndex ?? indexReportsBySlotDate(params.reports);
+  const weekStarts = enumerateWeekStartsBetween(startStr, endStr);
+
+  return weekStarts.map((weekStart) => {
+    const sunFri = [0, 1, 2, 3, 4, 5];
+    const weekEnd = addDaysToDateStr(weekStart, 5);
+    // Clamp the week's contribution to the visible range.
+    const lo = weekStart < startStr ? startStr : weekStart;
+    const hi = weekEnd > endStr ? endStr : weekEnd;
+    const datesInWindow = enumerateDatesBetween(lo, hi);
+
+    let expected = 0;
+    let reported = 0;
+    let completed = 0;
+    let missed = 0;
+
+    for (const date of datesInWindow) {
+      const dow = getDayOfWeekForDateStr(date);
+      if (!sunFri.includes(dow)) continue;
+      // For this date, count schedule entries that match the day.
+      for (const slot of schedules) {
+        if (DAY_MAP[slot.day] !== dow) continue;
+        expected++;
+        const entry = reportIndex.get(`${slot.id}|${date}`);
+        if (entry) {
+          reported++;
+          if (entry.status === 'completed') completed++;
+          else if (entry.status === 'missed') missed++;
+        }
+      }
+    }
+
+    return { weekStart, weekEnd, expected, reported, completed, missed };
+  });
+}
+
+export interface DayOfWeekStat {
+  dow: number; // 0..5 (Sun..Fri)
+  dayName: string; // Hebrew
+  expected: number;
+  reported: number;
+  unreported: number;
+  compliancePct: number;
+}
+
+const DAY_NAMES_BY_DOW: Record<number, string> = {
+  0: 'ראשון',
+  1: 'שני',
+  2: 'שלישי',
+  3: 'רביעי',
+  4: 'חמישי',
+  5: 'שישי',
+  6: 'שבת',
+};
+
+/** Day-of-week aggregate stats for Sun..Fri across the range. */
+export function getDayOfWeekStats(params: {
+  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day'>[];
+  reports: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[];
+  startStr: string;
+  endStr: string;
+  reportIndex?: Map<string, ReportIndexEntry>;
+}): DayOfWeekStat[] {
+  const { schedules, startStr, endStr } = params;
+  const reportIndex = params.reportIndex ?? indexReportsBySlotDate(params.reports);
+  const dates = enumerateDatesBetween(startStr, endStr);
+
+  const acc: Record<number, { expected: number; reported: number }> = {};
+  for (let i = 0; i <= 5; i++) acc[i] = { expected: 0, reported: 0 };
+
+  for (const date of dates) {
+    const dow = getDayOfWeekForDateStr(date);
+    if (dow > 5) continue;
+    for (const slot of schedules) {
+      if (DAY_MAP[slot.day] !== dow) continue;
+      acc[dow].expected++;
+      const entry = reportIndex.get(`${slot.id}|${date}`);
+      if (entry) acc[dow].reported++;
+    }
+  }
+
+  return Array.from({ length: 6 }, (_, dow) => {
+    const { expected, reported } = acc[dow];
+    const unreported = Math.max(0, expected - reported);
+    const compliancePct =
+      expected === 0 ? 100 : Math.min(100, Math.round((reported / expected) * 100));
+    return { dow, dayName: DAY_NAMES_BY_DOW[dow], expected, reported, unreported, compliancePct };
+  });
+}

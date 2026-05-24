@@ -1,10 +1,23 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   BookOpen, Users, Calendar, CheckCircle, XCircle, Plus, Trash2, Edit3,
-  Clock, TrendingUp, LogOut, GraduationCap,
+  Clock, TrendingUp, TrendingDown, LogOut, GraduationCap,
   FileText, AlertCircle, Menu, X, Lock, Download, Upload, Settings, ClipboardCheck
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  Cell,
+} from 'recharts';
 import { signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, User } from 'firebase/auth';
 import { auth } from './firebase';
 import {
@@ -15,7 +28,13 @@ import { Teacher, Schedule, Report, EmailReminderSettings } from './types';
 import * as XLSX from 'xlsx';
 import {
   ISRAEL_TIMEZONE,
+  addDaysToDateStr,
+  formatDateInTZ,
+  getDayOfWeekStats,
   getMissingLessonsForTeacherThisWeek,
+  getTeacherComplianceInRange,
+  getWeeklyTrend,
+  indexReportsBySlotDate,
 } from './lib/lesson-stats';
 import { usePersistedState } from './lib/usePersistedState';
 import Drawer from './components/Drawer';
@@ -731,10 +750,185 @@ const App = () => {
   };
 
   const totalClassesPlanned = schedule.length;
-  const totalReportsSubmitted = reports.length;
-  const completedReports = reports.filter(r => r.status === 'completed').length;
-  const missedReports = reports.filter(r => r.status === 'missed').length;
-  const complianceRate = totalReportsSubmitted > 0 ? Math.round((completedReports / totalReportsSubmitted) * 100) : 0;
+  const activeTeachersCount = teachers.filter((t) => t.active).length;
+
+  // ----------------------------------------------------------------------
+  // Overview & Statistics dashboard — period selection + derivations.
+  //
+  // Heavy lifting (compliance per teacher, weekly trend, day-of-week)
+  // lives in `lib/lesson-stats.ts` as pure functions. Here we just memoise
+  // them against (teachers, schedule, reports, range).
+  // ----------------------------------------------------------------------
+  type StatsPeriodPreset = '7d' | '30d' | '90d' | 'year';
+  type StatsPeriod =
+    | { type: 'preset'; preset: StatsPeriodPreset }
+    | { type: 'custom'; start: string; end: string };
+
+  const [statsPeriod, setStatsPeriod] = usePersistedState<StatsPeriod>(
+    'partani:statsPeriod',
+    { type: 'preset', preset: '30d' },
+    'local'
+  );
+
+  const statsRange = useMemo(() => {
+    const todayStr = formatDateInTZ(new Date(), ISRAEL_TIMEZONE);
+    if (statsPeriod.type === 'custom') {
+      const start = statsPeriod.start || addDaysToDateStr(todayStr, -29);
+      const end = statsPeriod.end || todayStr;
+      return start <= end
+        ? { startStr: start, endStr: end }
+        : { startStr: end, endStr: start };
+    }
+    const endStr = todayStr;
+    let startStr: string;
+    switch (statsPeriod.preset) {
+      case '7d':
+        startStr = addDaysToDateStr(todayStr, -6);
+        break;
+      case '90d':
+        startStr = addDaysToDateStr(todayStr, -89);
+        break;
+      case 'year': {
+        const [yyStr, mmStr] = todayStr.split('-');
+        const yy = Number(yyStr);
+        const mm = Number(mmStr);
+        // Israeli school year runs roughly Sep → Aug. Anything before
+        // September belongs to the year that started the previous Sep.
+        startStr = mm >= 9 ? `${yy}-09-01` : `${yy - 1}-09-01`;
+        break;
+      }
+      case '30d':
+      default:
+        startStr = addDaysToDateStr(todayStr, -29);
+        break;
+    }
+    return { startStr, endStr };
+  }, [statsPeriod]);
+
+  const reportIndex = useMemo(() => indexReportsBySlotDate(reports), [reports]);
+
+  const teacherCompliance = useMemo(
+    () =>
+      teachers.map((t) => ({
+        teacher: t,
+        ...getTeacherComplianceInRange({
+          teacherId: t.id,
+          schedules: schedule,
+          reports,
+          startStr: statsRange.startStr,
+          endStr: statsRange.endStr,
+          reportIndex,
+        }),
+      })),
+    [teachers, schedule, reports, statsRange.startStr, statsRange.endStr, reportIndex]
+  );
+
+  const teacherComplianceSorted = useMemo(
+    () =>
+      [...teacherCompliance].sort((a, b) => {
+        // Active teachers first; then lowest compliance %; then most unreported.
+        const aActive = a.teacher.active ? 0 : 1;
+        const bActive = b.teacher.active ? 0 : 1;
+        if (aActive !== bActive) return aActive - bActive;
+        if (a.compliancePct !== b.compliancePct) return a.compliancePct - b.compliancePct;
+        return b.unreported - a.unreported;
+      }),
+    [teacherCompliance]
+  );
+
+  const weeklyTrend = useMemo(
+    () =>
+      getWeeklyTrend({
+        schedules: schedule,
+        reports,
+        startStr: statsRange.startStr,
+        endStr: statsRange.endStr,
+        reportIndex,
+      }),
+    [schedule, reports, statsRange.startStr, statsRange.endStr, reportIndex]
+  );
+
+  const dayOfWeekStats = useMemo(
+    () =>
+      getDayOfWeekStats({
+        schedules: schedule,
+        reports,
+        startStr: statsRange.startStr,
+        endStr: statsRange.endStr,
+        reportIndex,
+      }),
+    [schedule, reports, statsRange.startStr, statsRange.endStr, reportIndex]
+  );
+
+  const periodTotals = useMemo(() => {
+    const totals = teacherCompliance.reduce(
+      (acc, tc) => ({
+        expected: acc.expected + tc.expected,
+        reported: acc.reported + tc.reported,
+        completed: acc.completed + tc.completed,
+        missed: acc.missed + tc.missed,
+      }),
+      { expected: 0, reported: 0, completed: 0, missed: 0 }
+    );
+    const unreported = Math.max(0, totals.expected - totals.reported);
+    const compliancePct =
+      totals.expected === 0 ? 100 : Math.round((totals.reported / totals.expected) * 100);
+    return { ...totals, unreported, compliancePct };
+  }, [teacherCompliance]);
+
+  const formatRangeLabel = (startStr: string, endStr: string) => {
+    const fmt = (s: string) => {
+      const [y, m, d] = s.split('-');
+      return `${d}/${m}/${y}`;
+    };
+    return `${fmt(startStr)} – ${fmt(endStr)}`;
+  };
+
+  const exportTeacherComplianceCsv = () => {
+    const header = [
+      'מורה',
+      'אימייל',
+      'פעיל',
+      'שיעורים צפויים',
+      'דווחו',
+      'התקיימו',
+      'לא התקיימו',
+      'חסר דיווח',
+      '% היענות',
+    ];
+    const rows = teacherComplianceSorted.map((tc) => [
+      tc.teacher.name ?? '',
+      tc.teacher.email ?? '',
+      tc.teacher.active ? 'כן' : 'לא',
+      String(tc.expected),
+      String(tc.reported),
+      String(tc.completed),
+      String(tc.missed),
+      String(tc.unreported),
+      `${tc.compliancePct}%`,
+    ]);
+    const csv = [header, ...rows]
+      .map((row) =>
+        row
+          .map((cell) => {
+            const needsQuote = /[",\n\r]/.test(cell);
+            const escaped = cell.replace(/"/g, '""');
+            return needsQuote ? `"${escaped}"` : escaped;
+          })
+          .join(',')
+      )
+      .join('\r\n');
+    // Prepend BOM so Excel opens UTF-8 Hebrew cleanly.
+    const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `partani-compliance-${statsRange.startStr}_${statsRange.endStr}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   const filteredReportsList = reports.filter(report => {
     const scheduleItem = schedule.find(s => s.id === report.scheduleId);
@@ -1762,20 +1956,131 @@ const App = () => {
                 animate="enter"
                 exit="exit"
                 transition={tabTransition}
-                className="space-y-8"
+                className="space-y-6"
               >
-                 <motion.div
-                   className="grid grid-cols-2 md:grid-cols-4 gap-4"
-                   variants={cardListVariants}
-                   initial="initial"
-                   animate="enter"
-                 >
-                  {[
-                    { label: 'סך השיעורים השבועיים', value: totalClassesPlanned,    color: 'text-[#111827]' },
-                    { label: 'דיווחים שהוזנו',         value: totalReportsSubmitted,  color: 'text-indigo-700' },
-                    { label: 'שיעורים שהתקיימו',       value: completedReports,       color: 'text-green-600' },
-                    { label: 'אחוז קיום',              value: `${complianceRate}%`,   color: 'text-amber-600' },
-                  ].map(stat => (
+                {/* Period selector */}
+                <div className="bg-white rounded border p-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 font-bold text-gray-700">
+                      <Calendar className="w-4 h-4 text-indigo-600" />
+                      תקופת ניתוח
+                    </div>
+                    <div className="text-xs text-gray-500 font-mono" dir="ltr">
+                      {formatRangeLabel(statsRange.startStr, statsRange.endStr)}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      { id: '7d', label: '7 ימים' },
+                      { id: '30d', label: '30 ימים' },
+                      { id: '90d', label: '90 ימים' },
+                      { id: 'year', label: 'שנת לימודים' },
+                    ] as { id: StatsPeriodPreset; label: string }[]).map((p) => {
+                      const isActive = statsPeriod.type === 'preset' && statsPeriod.preset === p.id;
+                      return (
+                        <button
+                          key={p.id}
+                          onClick={() => setStatsPeriod({ type: 'preset', preset: p.id })}
+                          className={`press px-3 py-1.5 text-sm font-bold rounded transition-colors ${
+                            isActive
+                              ? 'bg-indigo-600 text-white'
+                              : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                          }`}
+                        >
+                          {p.label}
+                        </button>
+                      );
+                    })}
+                    <button
+                      onClick={() =>
+                        setStatsPeriod({
+                          type: 'custom',
+                          start: statsRange.startStr,
+                          end: statsRange.endStr,
+                        })
+                      }
+                      className={`press px-3 py-1.5 text-sm font-bold rounded transition-colors ${
+                        statsPeriod.type === 'custom'
+                          ? 'bg-indigo-600 text-white'
+                          : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                      }`}
+                    >
+                      מותאם אישית
+                    </button>
+                  </div>
+                  {statsPeriod.type === 'custom' && (
+                    <div className="flex flex-wrap items-end gap-3 pt-2 border-t">
+                      <label className="text-sm">
+                        <span className="block text-xs font-bold text-gray-500 mb-1">מתאריך</span>
+                        <input
+                          type="date"
+                          value={statsPeriod.start}
+                          max={statsPeriod.end}
+                          onChange={(e) =>
+                            setStatsPeriod({ ...statsPeriod, start: e.target.value })
+                          }
+                          className="border rounded p-1.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                          dir="ltr"
+                        />
+                      </label>
+                      <label className="text-sm">
+                        <span className="block text-xs font-bold text-gray-500 mb-1">עד תאריך</span>
+                        <input
+                          type="date"
+                          value={statsPeriod.end}
+                          min={statsPeriod.start}
+                          onChange={(e) => setStatsPeriod({ ...statsPeriod, end: e.target.value })}
+                          className="border rounded p-1.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                          dir="ltr"
+                        />
+                      </label>
+                    </div>
+                  )}
+                  <div className="text-xs text-gray-400 pt-1">
+                    מערכת נוכחית: <span className="font-bold text-gray-600">{totalClassesPlanned}</span> שיעורים שבועיים • <span className="font-bold text-gray-600">{activeTeachersCount}</span> מורים פעילים
+                  </div>
+                </div>
+
+                {/* Period stat cards */}
+                <motion.div
+                  className="grid grid-cols-2 md:grid-cols-4 gap-4"
+                  variants={cardListVariants}
+                  initial="initial"
+                  animate="enter"
+                >
+                  {(() => {
+                    const pct = periodTotals.compliancePct;
+                    const pctColor =
+                      pct >= 85 ? 'text-green-600' : pct >= 70 ? 'text-amber-600' : 'text-red-600';
+                    return [
+                      {
+                        label: 'שיעורים צפויים בתקופה',
+                        value: periodTotals.expected.toLocaleString('he-IL'),
+                        color: 'text-[#111827]',
+                        sub: null as string | null,
+                      },
+                      {
+                        label: 'שיעורים שדווחו',
+                        value: periodTotals.reported.toLocaleString('he-IL'),
+                        color: 'text-indigo-700',
+                        sub: `${periodTotals.completed.toLocaleString('he-IL')} התקיימו • ${periodTotals.missed.toLocaleString('he-IL')} לא`,
+                      },
+                      {
+                        label: 'חסר דיווח',
+                        value: periodTotals.unreported.toLocaleString('he-IL'),
+                        color: 'text-red-600',
+                        sub: periodTotals.expected > 0
+                          ? `${Math.round((periodTotals.unreported / periodTotals.expected) * 100)}% מהצפי`
+                          : null,
+                      },
+                      {
+                        label: '% היענות',
+                        value: `${pct}%`,
+                        color: pctColor,
+                        sub: pct >= 85 ? 'מעולה' : pct >= 70 ? 'סביר' : 'בעייתי',
+                      },
+                    ];
+                  })().map((stat) => (
                     <motion.div
                       key={stat.label}
                       variants={cardItemVariants}
@@ -1784,10 +2089,274 @@ const App = () => {
                     >
                       <span className="text-gray-400 text-xs font-bold">{stat.label}</span>
                       <h3 className={`text-3xl font-bold ${stat.color}`}>{stat.value}</h3>
+                      {stat.sub && (
+                        <p className="text-xs text-gray-500 mt-1">{stat.sub}</p>
+                      )}
                     </motion.div>
                   ))}
                 </motion.div>
-                {/* Stats more if needed */}
+
+                {/* Teacher leaderboard */}
+                <div className="bg-white rounded border overflow-hidden">
+                  <div className="flex flex-wrap justify-between items-center gap-2 p-4 border-b">
+                    <div className="flex items-center gap-2">
+                      <TrendingDown className="w-4 h-4 text-red-600" />
+                      <span className="font-bold">לידרבורד מורים — מהפחות מדווח לגבוה</span>
+                      <span className="text-xs text-gray-400">({teacherComplianceSorted.length})</span>
+                    </div>
+                    <button
+                      onClick={exportTeacherComplianceCsv}
+                      className="press flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 rounded font-bold transition-colors"
+                    >
+                      <Download className="w-3.5 h-3.5" /> יצוא CSV
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto max-h-[480px] overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 text-gray-500 text-xs uppercase sticky top-0">
+                        <tr>
+                          <th className="text-right p-3 font-bold">מורה</th>
+                          <th className="text-center p-3 font-bold">צפויים</th>
+                          <th className="text-center p-3 font-bold">דווחו</th>
+                          <th className="text-center p-3 font-bold">חסר</th>
+                          <th className="text-right p-3 font-bold w-1/3">% היענות</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {teacherComplianceSorted.length === 0 && (
+                          <tr>
+                            <td colSpan={5} className="text-center text-gray-400 p-6">
+                              אין נתונים בתקופה זו
+                            </td>
+                          </tr>
+                        )}
+                        {teacherComplianceSorted.map((tc) => {
+                          const pct = tc.compliancePct;
+                          const barColor =
+                            pct >= 85 ? '#16a34a' : pct >= 70 ? '#d97706' : '#dc2626';
+                          return (
+                            <tr
+                              key={tc.teacher.id}
+                              className={`border-t hover:bg-gray-50 transition-colors ${
+                                !tc.teacher.active ? 'opacity-50' : ''
+                              }`}
+                            >
+                              <td className="p-3">
+                                <div className="font-bold text-gray-900">
+                                  {tc.teacher.name}
+                                  {!tc.teacher.active && (
+                                    <span className="mr-2 text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">
+                                      לא פעיל
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-gray-400" dir="ltr">{tc.teacher.email}</div>
+                              </td>
+                              <td className="text-center p-3 font-mono text-sm text-gray-600">
+                                {tc.expected}
+                              </td>
+                              <td className="text-center p-3 font-mono text-sm text-indigo-700">
+                                {tc.reported}
+                              </td>
+                              <td className="text-center p-3 font-mono text-sm text-red-600 font-bold">
+                                {tc.unreported}
+                              </td>
+                              <td className="p-3">
+                                <div className="flex items-center gap-2">
+                                  <div className="flex-1 h-2 bg-gray-100 rounded overflow-hidden" dir="ltr">
+                                    <div
+                                      className="h-full rounded transition-[width]"
+                                      style={{
+                                        width: `${pct}%`,
+                                        backgroundColor: barColor,
+                                      }}
+                                    />
+                                  </div>
+                                  <span
+                                    className="font-bold text-sm w-12 text-left tabular-nums"
+                                    style={{ color: barColor }}
+                                  >
+                                    {pct}%
+                                  </span>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Weekly trend chart */}
+                <div className="bg-white rounded border p-4">
+                  <div className="font-bold mb-1 flex items-center gap-2">
+                    <TrendingUp className="w-4 h-4 text-indigo-600" />
+                    דיווחים שבועיים לאורך זמן
+                  </div>
+                  <p className="text-xs text-gray-500 mb-4">
+                    האזור האפור הוא הצפי השבועי, הקו הכחול הוא הדיווחים שהוזנו בפועל. שבועות שבהם הקו הכחול צונח חזק מתחת לאפור = שבועות בעייתיים.
+                  </p>
+                  {weeklyTrend.length === 0 ? (
+                    <div className="text-center text-gray-400 py-8 text-sm">
+                      אין מספיק נתונים בתקופה הזו להצגת מגמה.
+                    </div>
+                  ) : (
+                    <div dir="ltr">
+                      <ResponsiveContainer width="100%" height={280}>
+                        <AreaChart
+                          data={weeklyTrend.map((w) => ({
+                            label: `${w.weekStart.slice(8)}/${w.weekStart.slice(5, 7)}`,
+                            weekStart: w.weekStart,
+                            weekEnd: w.weekEnd,
+                            expected: w.expected,
+                            reported: w.reported,
+                          }))}
+                          margin={{ top: 8, right: 12, left: 0, bottom: 0 }}
+                        >
+                          <defs>
+                            <linearGradient id="grad-expected" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="#9ca3af" stopOpacity={0.4} />
+                              <stop offset="100%" stopColor="#9ca3af" stopOpacity={0.05} />
+                            </linearGradient>
+                            <linearGradient id="grad-reported" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="#4f46e5" stopOpacity={0.55} />
+                              <stop offset="100%" stopColor="#4f46e5" stopOpacity={0.05} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                          <XAxis
+                            dataKey="label"
+                            tick={{ fill: '#6b7280', fontSize: 11 }}
+                            reversed
+                          />
+                          <YAxis
+                            allowDecimals={false}
+                            tick={{ fill: '#6b7280', fontSize: 11 }}
+                            orientation="right"
+                          />
+                          <Tooltip
+                            cursor={{ stroke: '#a5b4fc', strokeWidth: 1 }}
+                            contentStyle={{
+                              direction: 'rtl',
+                              borderRadius: 6,
+                              border: '1px solid #e5e7eb',
+                              fontSize: 12,
+                            }}
+                            labelFormatter={(_, payload) => {
+                              const p = payload?.[0]?.payload as
+                                | { weekStart: string; weekEnd: string }
+                                | undefined;
+                              if (!p) return '';
+                              return `שבוע ${formatRangeLabel(p.weekStart, p.weekEnd)}`;
+                            }}
+                            formatter={(value: number, name: string) => {
+                              const label = name === 'expected' ? 'צפויים' : 'דווחו';
+                              return [value, label];
+                            }}
+                          />
+                          <Legend
+                            verticalAlign="top"
+                            height={28}
+                            formatter={(value: string) =>
+                              value === 'expected' ? 'צפויים' : 'דווחו'
+                            }
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="expected"
+                            stroke="#9ca3af"
+                            fill="url(#grad-expected)"
+                            strokeWidth={2}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="reported"
+                            stroke="#4f46e5"
+                            fill="url(#grad-reported)"
+                            strokeWidth={2}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+                </div>
+
+                {/* Day-of-week chart */}
+                <div className="bg-white rounded border p-4">
+                  <div className="font-bold mb-1 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-amber-600" />
+                    השמטות לפי יום בשבוע
+                  </div>
+                  <p className="text-xs text-gray-500 mb-4">
+                    כל עמודה מציגה את סך השיעורים הצפויים ביום זה בתקופה. החלק הכחול = דווחו. החלק האדום בראש = לא דווחו. ככל שהחלק האדום גדול יותר, כך היום בעייתי יותר.
+                  </p>
+                  {dayOfWeekStats.every((d) => d.expected === 0) ? (
+                    <div className="text-center text-gray-400 py-8 text-sm">
+                      אין שיעורים בתקופה זו.
+                    </div>
+                  ) : (
+                    <div dir="ltr">
+                      <ResponsiveContainer width="100%" height={280}>
+                        <BarChart
+                          data={dayOfWeekStats.map((d) => ({
+                            dayName: d.dayName,
+                            reported: d.reported,
+                            unreported: d.unreported,
+                            expected: d.expected,
+                            compliancePct: d.compliancePct,
+                          }))}
+                          margin={{ top: 8, right: 12, left: 0, bottom: 0 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                          <XAxis
+                            dataKey="dayName"
+                            tick={{ fill: '#6b7280', fontSize: 12, fontWeight: 700 }}
+                            reversed
+                          />
+                          <YAxis
+                            allowDecimals={false}
+                            tick={{ fill: '#6b7280', fontSize: 11 }}
+                            orientation="right"
+                          />
+                          <Tooltip
+                            cursor={{ fill: '#f3f4f6' }}
+                            contentStyle={{
+                              direction: 'rtl',
+                              borderRadius: 6,
+                              border: '1px solid #e5e7eb',
+                              fontSize: 12,
+                            }}
+                            labelFormatter={(label, payload) => {
+                              const p = payload?.[0]?.payload as
+                                | { compliancePct: number; expected: number }
+                                | undefined;
+                              if (!p) return `יום ${label}`;
+                              return `יום ${label} — ${p.compliancePct}% היענות`;
+                            }}
+                            formatter={(value: number, name: string) => {
+                              const label = name === 'reported' ? 'דווחו' : 'לא דווחו';
+                              return [value, label];
+                            }}
+                          />
+                          <Legend
+                            verticalAlign="top"
+                            height={28}
+                            formatter={(value: string) =>
+                              value === 'reported' ? 'דווחו' : 'לא דווחו'
+                            }
+                          />
+                          <Bar dataKey="reported" stackId="day" fill="#4f46e5" radius={[0, 0, 0, 0]} />
+                          <Bar dataKey="unreported" stackId="day" fill="#dc2626" radius={[6, 6, 0, 0]}>
+                            {dayOfWeekStats.map((_, i) => (
+                              <Cell key={i} fill="#dc2626" />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+                </div>
               </motion.div>
             )}
             </AnimatePresence>
