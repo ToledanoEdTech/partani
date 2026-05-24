@@ -1,0 +1,124 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'yossitole@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.token.email))
+      );
+    }
+    
+    function isOwnEmail(email) {
+      return isVerifiedUser() && request.auth.token.email == email;
+    }
+
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    
+    // Allow dots because email can be used as ID in some places
+    function isValidId(id) { 
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-\\.\\@]+$'); 
+    }
+
+    // Validation Helpers
+    function isValidAdmin(data) {
+      return data.keys().hasAll(['email', 'name']) && data.keys().size() == 2 &&
+             data.email is string && data.email.size() <= 128 &&
+             data.name is string && data.name.size() <= 128;
+    }
+
+    function isValidTeacher(data) {
+      return data.keys().hasAll(['name', 'email', 'subject', 'active']) && data.keys().size() == 4 &&
+             data.name is string && data.name.size() <= 128 &&
+             data.email is string && data.email.size() <= 128 &&
+             data.subject is string && data.subject.size() <= 128 &&
+             data.active is bool;
+    }
+
+    function isValidSchedule(data) {
+      return data.keys().hasAll(['teacherId', 'teacherEmail', 'day', 'hour', 'studentName', 'subject']) && data.keys().size() == 6 &&
+             data.teacherId is string && data.teacherId.size() <= 128 &&
+             data.teacherEmail is string && data.teacherEmail.size() <= 128 &&
+             data.day is string && data.day.size() <= 32 &&
+             data.hour is string && data.hour.size() <= 32 &&
+             data.studentName is string && data.studentName.size() <= 128 &&
+             data.subject is string && data.subject.size() <= 128;
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll(['scheduleId', 'teacherId', 'teacherEmail', 'date', 'status', 'text', 'timestamp']) && data.keys().size() == 7 &&
+             data.scheduleId is string && data.scheduleId.size() <= 128 &&
+             data.teacherId is string && data.teacherId.size() <= 128 &&
+             data.teacherEmail is string && data.teacherEmail.size() <= 128 &&
+             data.date is string && data.date.size() <= 32 &&
+             data.status is string && data.status.matches('^(completed|missed)$') &&
+             data.text is string && data.text.size() <= 1024 &&
+             data.timestamp is string && data.timestamp.size() <= 128;
+    }
+
+    // Collections
+    match /admins/{email} {
+      allow get: if isVerifiedUser() && (isAdmin() || request.auth.token.email == email);
+      allow list: if isAdmin();
+      allow create: if isValidId(email) && isAdmin() && isValidAdmin(incoming()) && incoming().email == email;
+      allow update: if isValidId(email) && isAdmin() && isValidAdmin(incoming()) && incoming().email == existing().email;
+      allow delete: if isValidId(email) && isAdmin() && email != 'yossitole@gmail.com';
+    }
+
+    match /settings/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /teachers/{teacherId} {
+      allow read: if isVerifiedUser();
+      allow create: if isValidId(teacherId) && isAdmin() && isValidTeacher(incoming());
+      allow update: if isValidId(teacherId) && isAdmin() && isValidTeacher(incoming()) && incoming().email == existing().email;
+      allow delete: if isValidId(teacherId) && isAdmin();
+    }
+
+    match /schedules/{scheduleId} {
+      // Admins can read all. Teachers can read schedules assigned to their email.
+      allow get: if isValidId(scheduleId) && isVerifiedUser() && (isAdmin() || resource.data.teacherEmail == request.auth.token.email);
+      allow list: if isVerifiedUser() && (isAdmin() || resource.data.teacherEmail == request.auth.token.email);
+      
+      // Only admins can modify schedules
+      allow create: if isValidId(scheduleId) && isAdmin() && isValidSchedule(incoming());
+      allow update: if isValidId(scheduleId) && isAdmin() && isValidSchedule(incoming());
+      allow delete: if isValidId(scheduleId) && isAdmin();
+    }
+
+    match /reports/{reportId} {
+      // Admins can read all. Teachers can read their own reports.
+      allow get: if isValidId(reportId) && isVerifiedUser() && (isAdmin() || resource.data.teacherEmail == request.auth.token.email);
+      allow list: if isVerifiedUser() && (isAdmin() || resource.data.teacherEmail == request.auth.token.email);
+
+      // Teachers can create/update THEIR own reports. Admins can too.
+      allow create: if isValidId(reportId) && isVerifiedUser() && isValidReport(incoming()) && 
+                    (isAdmin() || (incoming().teacherEmail == request.auth.token.email && 
+                     exists(/databases/$(database)/documents/schedules/$(incoming().scheduleId)) &&
+                     get(/databases/$(database)/documents/schedules/$(incoming().scheduleId)).data.teacherEmail == request.auth.token.email));
+
+      allow update: if isValidId(reportId) && isVerifiedUser() && isValidReport(incoming()) &&
+                    (isAdmin() || (existing().teacherEmail == request.auth.token.email && incoming().teacherEmail == existing().teacherEmail &&
+                     incoming().scheduleId == existing().scheduleId));
+
+      allow delete: if isValidId(reportId) && isAdmin();
+    }
+  }
+}

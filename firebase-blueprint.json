@@ -1,0 +1,73 @@
+{
+  "entities": {
+    "Admin": {
+      "title": "Admin",
+      "description": "Admin users who can manage teachers and schedules",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "name": { "type": "string" }
+      },
+      "required": ["email", "name"]
+    },
+    "Teacher": {
+      "title": "Teacher",
+      "description": "A teacher in the Yeshiva",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "subject": { "type": "string" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["name", "email", "subject", "active"]
+    },
+    "Schedule": {
+      "title": "Schedule",
+      "description": "A specific class schedule slot",
+      "type": "object",
+      "properties": {
+        "teacherId": { "type": "string", "description": "References Teacher document ID" },
+        "teacherEmail": { "type": "string", "description": "Denormalized for secure list queries" },
+        "day": { "type": "string" },
+        "hour": { "type": "string" },
+        "studentName": { "type": "string" },
+        "subject": { "type": "string" }
+      },
+      "required": ["teacherId", "teacherEmail", "day", "hour", "studentName", "subject"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "A report filed by a teacher for a class",
+      "type": "object",
+      "properties": {
+        "scheduleId": { "type": "string", "description": "References Schedule document ID" },
+        "teacherId": { "type": "string", "description": "References Teacher document ID" },
+        "teacherEmail": { "type": "string", "description": "Denormalized for secure list queries" },
+        "date": { "type": "string" },
+        "status": { "type": "string", "enum": ["completed", "missed"] },
+        "text": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["scheduleId", "teacherId", "teacherEmail", "date", "status", "text", "timestamp"]
+    }
+  },
+  "firestore": {
+    "admins/{email}": {
+      "schema": "Admin",
+      "description": "Stores admin information. ID is the email."
+    },
+    "teachers/{teacherId}": {
+      "schema": "Teacher",
+      "description": "Stores teacher profile information."
+    },
+    "schedules/{scheduleId}": {
+      "schema": "Schedule",
+      "description": "Stores class schedules assigned by admins."
+    },
+    "reports/{reportId}": {
+      "schema": "Report",
+      "description": "Stores reports submitted by teachers."
+    }
+  }
+}

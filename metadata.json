@@ -1,0 +1,8 @@
+{
+  "name": "Remix: צביה אלישיב - מעקב פרטני",
+  "description": "מערכת ניהול ולמידה לצוות ישיבת צביה אלישיב למעקב דיווח ושיעורים פרטניים",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
