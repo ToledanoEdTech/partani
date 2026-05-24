@@ -5,6 +5,8 @@ import { initializeFirestore } from 'firebase/firestore';
 // Fallback to local config if environment variables aren't present (e.g. in AI Studio)
 import localConfig from '../firebase-applet-config.json';
 
+const isExternalDeployment = !!import.meta.env.VITE_FIREBASE_PROJECT_ID;
+
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || localConfig.apiKey,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || localConfig.authDomain,
@@ -12,7 +14,7 @@ const firebaseConfig = {
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || localConfig.storageBucket,
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || localConfig.messagingSenderId,
   appId: import.meta.env.VITE_FIREBASE_APP_ID || localConfig.appId,
-  firestoreDatabaseId: import.meta.env.VITE_FIREBASE_DATABASE_ID || localConfig.firestoreDatabaseId
+  firestoreDatabaseId: isExternalDeployment ? (import.meta.env.VITE_FIREBASE_DATABASE_ID || '(default)') : localConfig.firestoreDatabaseId
 };
 
 const app = initializeApp(firebaseConfig);
