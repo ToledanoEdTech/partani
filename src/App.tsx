@@ -249,9 +249,24 @@ const App = () => {
     provider.setCustomParameters({ prompt: 'select_account' });
     try {
       await signInWithPopup(auth, provider);
-    } catch (e) {
-      console.error(e);
-      triggerNotification('התחברות נכשלה', 'error');
+    } catch (e: any) {
+      console.error('Login error:', e);
+      const code: string = e?.code || '';
+      let msg = 'התחברות נכשלה';
+      if (code === 'auth/unauthorized-domain') {
+        msg = `הדומיין ${window.location.hostname} לא מורשה ב-Firebase. יש להוסיף אותו ב-Authentication > Settings > Authorized domains`;
+      } else if (code === 'auth/popup-blocked') {
+        msg = 'הדפדפן חסם את חלון ההתחברות. אנא אפשר חלונות קופצים ונסה שוב';
+      } else if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        msg = 'חלון ההתחברות נסגר. אנא נסה שוב';
+      } else if (code === 'auth/network-request-failed') {
+        msg = 'בעיית רשת. בדוק את החיבור לאינטרנט ונסה שוב';
+      } else if (code === 'auth/operation-not-allowed') {
+        msg = 'התחברות עם Google לא מופעלת ב-Firebase. הפעל אותה ב-Authentication > Sign-in method';
+      } else if (code === 'auth/configuration-not-found' || code === 'auth/invalid-api-key') {
+        msg = 'הגדרות Firebase שגויות. בדוק את הקונפיגורציה';
+      }
+      triggerNotification(msg, 'error');
     }
   };
 

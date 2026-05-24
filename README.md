@@ -1,20 +1,39 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# מערכת דיווח ומעקב - שיעורים פרטניים
 
-# Run and deploy your AI Studio app
+ישיבת צביה אלישיב לוד
 
-This contains everything you need to run your app locally.
+## הפעלה לוקאלית מהירה (Windows)
 
-View your app in AI Studio: https://ai.studio/apps/94719ca7-c4ba-4f99-9871-ba6a17594d01
+לחיצה כפולה על אחד מהקבצים:
 
-## Run Locally
+- `start-local.bat` - לפתיחה רגילה ב-CMD
+- `start-local.ps1` - לפתיחה ב-PowerShell
 
-**Prerequisites:**  Node.js
+הסקריפט יתקין באופן אוטומטי את כל החבילות (אם צריך) ויפתח את האתר בדפדפן בכתובת [http://localhost:3000](http://localhost:3000).
 
+## הפעלה ידנית
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+דרישות: [Node.js](https://nodejs.org/) (מומלץ גרסה 20 ומעלה).
+
+```bash
+npm install
+npm run dev
+```
+
+האתר יפתח בכתובת `http://localhost:3000`.
+
+## הגדרת Firebase (חיוני להתחברות)
+
+האתר משתמש ב-Firebase Authentication עבור התחברות עם חשבון Google. צריך לוודא:
+
+1. **קונפיגורציה תקינה** - בקובץ `firebase-applet-config.json` או דרך משתני סביבה (`VITE_FIREBASE_*` בקובץ `.env.local` או ב-Vercel).
+2. **דומיינים מורשים** ב-Firebase Console: `Authentication > Settings > Authorized domains`. יש להוסיף:
+   - `localhost`
+   - `partani-topaz.vercel.app`
+   - כל דומיין מותאם אישית אם יש.
+3. **Google Sign-in מופעל** ב-`Authentication > Sign-in method`.
+4. **חוקי Firestore** מהקובץ `firestore.rules` הועלו ל-Firebase Console.
+
+## משתני סביבה
+
+ראה דוגמה ב-[.env.example](.env.example). העתק לקובץ `.env.local` ומלא ערכים אם רוצים להחליף את הקונפיגורציה הקבועה ב-`firebase-applet-config.json`.
