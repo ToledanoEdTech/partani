@@ -233,7 +233,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         appUrl,
       });
 
-      await resend!.emails.send({
+      const sendResult = await resend!.emails.send({
         from: mailFrom!,
         to: t.email,
         subject: EMAIL_SUBJECT,
@@ -245,6 +245,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
           'Content-Language': 'he',
         },
       });
+
+      // The Resend SDK returns errors as `{ data: null, error: {...} }`
+      // instead of throwing — so a try/catch alone misses API errors.
+      // Treat any populated `error` field as a delivery failure.
+      const sendError = (sendResult as any)?.error;
+      if (sendError) {
+        const errMsg = `${sendError.name || 'resend_error'}: ${sendError.message || 'unknown'}`;
+        console.error(`[email-reminders] resend rejected send to ${t.email}:`, sendError);
+        results.push({
+          ...base,
+          status: 'error',
+          reason: errMsg,
+          missingCount: missing.length,
+        });
+        summary.errors++;
+        continue;
+      }
 
       results.push({ ...base, status: 'sent', missingCount: missing.length });
       summary.sent++;

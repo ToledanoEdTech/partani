@@ -102,12 +102,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       headers: { 'Content-Language': 'he' },
     });
 
+    // The Resend SDK does NOT throw on API errors — it returns
+    // `{ data: null, error: {...} }`. We surface that explicitly so the
+    // caller can rely on the HTTP status / `ok` flag alone.
+    const resendError = (result as any)?.error;
+    if (resendError) {
+      const statusCode = Number(resendError.statusCode) || 500;
+      res.status(statusCode).json({
+        ok: false,
+        from: mailFrom,
+        attemptedTo: to,
+        error: {
+          name: resendError.name,
+          statusCode: resendError.statusCode,
+          message: resendError.message,
+        },
+      });
+      return;
+    }
+
     res.status(200).json({
       ok: true,
       sentTo: to,
       from: mailFrom,
       resendId: (result as any)?.data?.id ?? null,
-      raw: result,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
