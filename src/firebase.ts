@@ -28,15 +28,49 @@ if (missing.length > 0) {
     `Create a .env.local file (see .env.example) or set these as Vercel environment variables.`;
   console.error(message);
   if (typeof document !== 'undefined') {
-    document.body.innerHTML =
-      `<div style="font-family:system-ui;padding:40px;max-width:680px;margin:40px auto;` +
-      `border:1px solid #fca5a5;background:#fef2f2;border-radius:12px;color:#7f1d1d;` +
-      `direction:rtl;text-align:right;line-height:1.7">` +
-      `<h2 style="margin-top:0">שגיאת תצורה - Firebase</h2>` +
-      `<p>קונפיגורציית Firebase חסרה. שדות חסרים: <code>${missing.join(', ')}</code></p>` +
-      `<p>צור קובץ <code>.env.local</code> לפי הדוגמה ב-<code>.env.example</code>, ` +
-      `או הגדר את משתני הסביבה ב-Vercel.</p>` +
-      `</div>`;
+    const host = window.location.hostname;
+    const onVercel = host.endsWith('.vercel.app');
+    const onLocal = host === 'localhost' || host === '127.0.0.1';
+
+    const instructionsHtml = onVercel
+      ? `
+        <h3 style="margin-bottom:8px">איך לתקן (הגדרה ב-Vercel)</h3>
+        <ol style="padding-right:20px;margin:0">
+          <li>היכנס ל-<a href="https://vercel.com/dashboard" target="_blank" style="color:#1d4ed8;text-decoration:underline">Vercel Dashboard</a></li>
+          <li>בחר את הפרויקט <b>partani-topaz</b></li>
+          <li>לחץ על <b>Settings</b> ← <b>Environment Variables</b></li>
+          <li>הוסף את כל המשתנים <code>VITE_FIREBASE_*</code> מהקובץ <code>.env.local</code> המקומי שלך (החל על Production, Preview ו-Development)</li>
+          <li>לאחר השמירה - כנס ל-<b>Deployments</b>, לחץ <b>…</b> על הדפלוימנט האחרון ובחר <b>Redeploy</b></li>
+        </ol>
+        <p style="margin-top:14px;padding-top:12px;border-top:1px solid #fecaca">
+          טיפ: יש סקריפט אוטומטי במאגר - <code>setup-vercel-env.bat</code> - שעושה את כל זה בלחיצה אחת.
+        </p>`
+      : onLocal
+      ? `
+        <h3 style="margin-bottom:8px">איך לתקן (הפעלה לוקאלית)</h3>
+        <ol style="padding-right:20px;margin:0">
+          <li>וודא שקיים קובץ <code>.env.local</code> בתיקיית הפרויקט (העתק מ-<code>.env.example</code> אם צריך)</li>
+          <li>מלא את כל ערכי <code>VITE_FIREBASE_*</code> מ-Firebase Console ← Project Settings</li>
+          <li>הפסק את השרת (Ctrl+C) והפעל שוב <code>npm run dev</code> או <code>start-local.bat</code></li>
+        </ol>`
+      : `
+        <h3 style="margin-bottom:8px">איך לתקן</h3>
+        <p>הגדר את משתני הסביבה <code>VITE_FIREBASE_*</code> בפלטפורמת האירוח שלך, או צור קובץ <code>.env.local</code> בפיתוח לוקאלי.</p>`;
+
+    document.body.innerHTML = `
+      <div style="font-family:system-ui,-apple-system,'Segoe UI',sans-serif;padding:40px;max-width:720px;margin:40px auto;
+        border:1px solid #fca5a5;background:#fef2f2;border-radius:14px;color:#7f1d1d;
+        direction:rtl;text-align:right;line-height:1.7;box-shadow:0 4px 14px rgba(0,0,0,0.06)">
+        <h2 style="margin:0 0 10px 0;color:#991b1b">שגיאת תצורה - Firebase</h2>
+        <p style="margin:0 0 8px 0">
+          קונפיגורציית Firebase חסרה. שדות חסרים:
+          <code style="background:#fee2e2;padding:2px 6px;border-radius:4px">${missing.join(', ')}</code>
+        </p>
+        <p style="margin:0 0 16px 0;font-size:14px;color:#9f1239">
+          דומיין נוכחי: <code>${host}</code>
+        </p>
+        ${instructionsHtml}
+      </div>`;
   }
   throw new Error(message);
 }

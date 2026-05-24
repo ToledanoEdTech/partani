@@ -36,4 +36,20 @@ npm run dev
 
 ## משתני סביבה
 
-ראה דוגמה ב-[.env.example](.env.example). העתק לקובץ `.env.local` ומלא ערכים אם רוצים להחליף את הקונפיגורציה הקבועה ב-`firebase-applet-config.json`.
+ראה דוגמה ב-[.env.example](.env.example). העתק לקובץ `.env.local` ומלא ערכים. הקובץ הזה חסום מגיט ולא יעלה למאגר.
+
+## פריסה ל-Vercel
+
+`.env.local` הוא רק ללוקאלית - הוא **לא** מסונכרן אוטומטית ל-Vercel.
+
+**אופציה 1 (מומלצת) - אוטומטית עם הסקריפט:**
+
+לחיצה כפולה על `setup-vercel-env.bat`. הסקריפט יקרא את `.env.local` ויעלה את כל המשתנים לפרויקט שלך ב-Vercel (Production + Preview + Development). בפעם הראשונה תתבקש להתחבר ל-Vercel דרך הדפדפן.
+
+לאחר מכן צריך לעשות Redeploy ידני מ-Vercel Dashboard כדי שהמשתנים החדשים ייטענו.
+
+**אופציה 2 - ידנית:**
+
+1. [Vercel Dashboard](https://vercel.com/dashboard) ← הפרויקט ← `Settings` ← `Environment Variables`
+2. הוסף את כל המשתנים מ-`.env.local` (אותם שמות בדיוק) - החל על Production, Preview ו-Development
+3. `Deployments` ← `...` על הדפלוימנט האחרון ← `Redeploy`
