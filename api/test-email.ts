@@ -40,7 +40,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   }
 
   const resendKey = process.env.RESEND_API_KEY;
-  const mailFrom = process.env.MAIL_FROM;
+  // Allow overriding MAIL_FROM via `?from=` to test verified-domain vs
+  // sandbox sender quickly, without round-tripping through the Vercel UI.
+  const fromOverride = typeof req.query.from === 'string' ? req.query.from : undefined;
+  const mailFrom = fromOverride || process.env.MAIL_FROM;
   const appUrl = process.env.APP_URL || 'https://partani-topaz.vercel.app';
 
   if (!resendKey || !mailFrom) {
