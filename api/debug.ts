@@ -1,41 +1,39 @@
 /**
- * Tiny diagnostic endpoint — no external imports. Used to verify the
- * Vercel serverless runtime is operational and to inspect which env
- * vars are visible to the function (without leaking their values).
+ * Dynamic-import probe — loads each suspect module one-by-one in
+ * try/catch, returning per-module status. Lets us see WHICH import
+ * is crashing the real /api/cron/email-reminders handler.
  *
  * GET /api/debug
  */
-export default function handler(req: any, res: any) {
-  const envKeys = Object.keys(process.env)
-    .filter(
-      (k) =>
-        k.startsWith('FIREBASE_ADMIN_') ||
-        k === 'RESEND_API_KEY' ||
-        k === 'MAIL_FROM' ||
-        k === 'APP_URL' ||
-        k === 'CRON_SECRET' ||
-        k === 'VERCEL' ||
-        k === 'VERCEL_ENV' ||
-        k === 'NODE_ENV'
-    )
-    .sort();
+export default async function handler(_req: any, res: any) {
+  const probes: Record<string, { ok: boolean; error?: string; exports?: string[] }> = {};
 
-  const envPresence: Record<string, string> = {};
-  for (const k of envKeys) {
-    const v = process.env[k];
-    if (k === 'CRON_SECRET' || k === 'RESEND_API_KEY' || k === 'FIREBASE_ADMIN_PRIVATE_KEY') {
-      envPresence[k] = v ? `set (length: ${v.length})` : 'MISSING';
-    } else {
-      envPresence[k] = v ? `set: ${v.slice(0, 80)}${v.length > 80 ? '...' : ''}` : 'MISSING';
+  async function probe(name: string, fn: () => Promise<unknown>) {
+    try {
+      const mod = (await fn()) as Record<string, unknown>;
+      probes[name] = {
+        ok: true,
+        exports: mod && typeof mod === 'object' ? Object.keys(mod).slice(0, 10) : [],
+      };
+    } catch (err) {
+      probes[name] = {
+        ok: false,
+        error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      };
     }
   }
+
+  await probe('resend', () => import('resend'));
+  await probe('firebase-admin/app', () => import('firebase-admin/app'));
+  await probe('firebase-admin/firestore', () => import('firebase-admin/firestore'));
+  await probe('local: ../_lib/firebase-admin', () => import('./_lib/firebase-admin'));
+  await probe('local: ../_lib/email-template', () => import('./_lib/email-template'));
+  await probe('local: ../../src/lib/lesson-stats', () => import('../src/lib/lesson-stats'));
+  await probe('local: ../../src/types', () => import('../src/types'));
 
   res.status(200).json({
     ok: true,
     runtime: process.version,
-    cwd: process.cwd(),
-    method: req.method,
-    url: req.url,
-    envPresence,
+    probes,
   });
 }
