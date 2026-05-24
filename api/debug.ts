@@ -23,6 +23,16 @@ export default async function handler(_req: any, res: any) {
     }
   }
 
+  const cronSecret = process.env.CRON_SECRET || '';
+  (probes as any)['_cron_secret_diagnostic'] = {
+    ok: true,
+    length: cronSecret.length,
+    head: cronSecret.slice(0, 4),
+    tail: cronSecret.slice(-4),
+    endsWithEquals: cronSecret.endsWith('='),
+    containsWhitespace: /\s/.test(cronSecret),
+  };
+
   await probe('resend', () => import('resend'));
   await probe('firebase-admin/app', () => import('firebase-admin/app'));
   await probe('firebase-admin/firestore', () => import('firebase-admin/firestore'));
