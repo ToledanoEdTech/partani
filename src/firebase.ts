@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { browserLocalPersistence, getAuth, setPersistence } from 'firebase/auth';
 import { initializeFirestore } from 'firebase/firestore';
 
 import localConfig from '../firebase-applet-config.json';
@@ -87,4 +87,11 @@ export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true
 }, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+
+// Explicit local persistence — בלי זה, בדפדפנים מסוימים (private mode,
+// blocked third-party storage) Firebase נופל ל-inMemoryPersistence וכל
+// רענון דף מנתק את המשתמש ושולח אותו חזרה לעמוד הראשי.
+setPersistence(auth, browserLocalPersistence).catch((err) => {
+  console.warn('[Firebase] Could not set browserLocalPersistence:', err);
+});
 

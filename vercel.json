@@ -4,8 +4,19 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/((?!api/).*)",
       "destination": "/index.html"
+    }
+  ],
+  "functions": {
+    "api/cron/email-reminders.ts": {
+      "maxDuration": 60
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/email-reminders",
+      "schedule": "0 17 * * 4"
     }
   ]
 }

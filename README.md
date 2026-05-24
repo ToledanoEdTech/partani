@@ -42,14 +42,71 @@ npm run dev
 
 `.env.local` הוא רק ללוקאלית - הוא **לא** מסונכרן אוטומטית ל-Vercel.
 
-**אופציה 1 (מומלצת) - אוטומטית עם הסקריפט:**
-
-לחיצה כפולה על `setup-vercel-env.bat`. הסקריפט יקרא את `.env.local` ויעלה את כל המשתנים לפרויקט שלך ב-Vercel (Production + Preview + Development). בפעם הראשונה תתבקש להתחבר ל-Vercel דרך הדפדפן.
-
-לאחר מכן צריך לעשות Redeploy ידני מ-Vercel Dashboard כדי שהמשתנים החדשים ייטענו.
-
-**אופציה 2 - ידנית:**
+הוספת משתנים ידנית (חד-פעמית):
 
 1. [Vercel Dashboard](https://vercel.com/dashboard) ← הפרויקט ← `Settings` ← `Environment Variables`
 2. הוסף את כל המשתנים מ-`.env.local` (אותם שמות בדיוק) - החל על Production, Preview ו-Development
-3. `Deployments` ← `...` על הדפלוימנט האחרון ← `Redeploy`
+3. `Deployments` ← `...` על הדפלוימנט האחרון ← `Redeploy` (בטל את `Use existing Build Cache`)
+
+> **אזהרה:** אל תריץ `vercel link`, `vercel env pull` או פקודות דומות בתיקייה - הן ידרסו את `.env.local` שלך!
+
+## תזכורות מייל אוטומטיות
+
+המערכת שולחת מייל בעברית למורים פעילים שלא דיווחו על **לפחות 2 שיעורים** שכבר התקיימו בשבוע הנוכחי. הקוד מורכב מ-3 שכבות:
+
+- **לוגיקה משותפת** — `src/lib/lesson-stats.ts` (חישוב חוסרי דיווח, גבולות שבוע ב-`Asia/Jerusalem`). מיובא הן ב-`App.tsx` והן ב-cron.
+- **Cron handler** — `api/cron/email-reminders.ts` (Vercel Serverless + Firebase Admin SDK + Resend).
+- **ממשק ניהול** — שני אזורים ב-`App.tsx`: סקשן "תזכורות מייל" בטאב **הגדרות** (toggle גלובלי, מינימום שיעורים, סטטוס ריצה אחרונה), ועמודת מתג לכל מורה בטאב **ניהול מורים**.
+
+### לוח זמנים
+
+ה-cron מתוזמן ב-`vercel.json` ל-**יום חמישי 17:00 UTC** (= **20:00 שעון ישראל בקיץ / 19:00 בחורף**, בשל מעבר שעון). ה-handler עצמו לא מבצע בדיקה תלוית-שעה — הוא תמיד מעבד את "השבוע הנוכחי", כך שההסחה של שעה אחת בחורף לא משפיעה על ההתנהגות. אם תרצה גישה אחרת (למשל "יום ראשון בערב") — שנה את הביטוי ב-`vercel.json` בלבד.
+
+### מדיניות שליחה
+
+- מורה לא יקבל יותר ממייל אחד לשבוע — מתועד ב-Firestore: `settings/general.emailReminders.lastSentByTeacher[teacherId] = weekKey`.
+- ניתן לבטל גלובלית בטאב הגדרות (`emailReminders.enabled = false`).
+- ניתן לבטל לכל מורה בנפרד בטבלת ניהול מורים (`teachers/{id}.emailRemindersEnabled = false`).
+- שדה `emailRemindersEnabled` שחסר על מסמך מורה נחשב כ-`true` (ברירת מחדל מופעל).
+
+### הגדרה ראשונית
+
+1. **חשבון Resend** — צור חשבון ב-[resend.com](https://resend.com), אמת דומיין (או השתמש בכתובת `onboarding@resend.dev` לבדיקות), והוצא API key.
+2. **Service Account של Firebase** — Firebase Console ← Project Settings ← Service accounts ← `Generate new private key`. שמור את ה-JSON.
+3. **הוספת משתני סביבה ב-Vercel** (Project ← Settings ← Environment Variables):
+   - `RESEND_API_KEY` — מה-Resend
+   - `MAIL_FROM` — לדוגמה `"מערכת דיווחים <noreply@your-domain.com>"`
+   - `APP_URL` — `https://partani-topaz.vercel.app` או הדומיין המותאם
+   - `FIREBASE_ADMIN_PROJECT_ID`, `FIREBASE_ADMIN_CLIENT_EMAIL`, `FIREBASE_ADMIN_PRIVATE_KEY` — מה-JSON של ה-service account. את ה-`private_key` הדבק במלואו; שורות חדשות (`\n`) מומרות אוטומטית ע"י ה-handler.
+   - `FIREBASE_ADMIN_DATABASE_ID` — רק אם השתמשת ב-Named DB (אחרת השאר ריק או `(default)`).
+   - `CRON_SECRET` — מחרוזת אקראית ארוכה (16+ תווים). Vercel ישלח אותה אוטומטית בהדר `Authorization: Bearer ...` כשה-cron מופעל.
+4. **חוקי Firestore** — אחרי `git pull` של עדכון `firestore.rules` (הוספת `emailRemindersEnabled` כשדה אופציונלי), העלה אותם דרך Firebase Console או `firebase deploy --only firestore:rules`.
+5. **Redeploy** — אחרי הוספת משתני הסביבה, בצע Redeploy ב-Vercel (בלי build cache בפעם הראשונה).
+
+### בדיקות ידניות
+
+הריץ דרך הדפדפן או curl:
+
+```bash
+# Dry-run (לא שולח מייל, רק מחשב מי היה מקבל):
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  "https://your-domain/api/cron/email-reminders?dryRun=1"
+
+# שליחה אמיתית עכשיו, מתעלם מ-dedup השבועי:
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  "https://your-domain/api/cron/email-reminders?force=1"
+```
+
+התגובה מחזירה `summary` עם מספר שנשלחו/נדלגו/נכשלו וגם `results` עם פירוט פר מורה (סיבת דילוג, מספר שיעורים חסרים).
+
+### לוקאלית
+
+`vercel dev` יחקה את ה-cron אבל לא יפעיל אותו אוטומטית בזמן. ניתן להריץ ידנית את ה-endpoint לאחר טעינת `.env.local`:
+
+```bash
+npx vercel dev
+# בחלון שני:
+curl "http://localhost:3000/api/cron/email-reminders?dryRun=1"
+```
+
+(ב-development, אם `CRON_SECRET` לא מוגדר — ה-handler מקבל בקשות לא-מאומתות לנוחות הפיתוח. בייצור הוא דורש אותו.)

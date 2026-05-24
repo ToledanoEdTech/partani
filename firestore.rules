@@ -43,11 +43,15 @@ service cloud.firestore {
     }
 
     function isValidTeacher(data) {
-      return data.keys().hasAll(['name', 'email', 'subject', 'active']) && data.keys().size() == 4 &&
+      return data.keys().hasAll(['name', 'email', 'subject', 'active']) &&
+             data.keys().hasOnly(['name', 'email', 'subject', 'active', 'emailRemindersEnabled']) &&
              data.name is string && data.name.size() <= 128 &&
              data.email is string && data.email.size() <= 128 &&
              data.subject is string && data.subject.size() <= 128 &&
-             data.active is bool;
+             data.active is bool &&
+             // Optional opt-out flag for the automated email-reminders cron.
+             // If present must be boolean; if absent treated as `true` by the cron.
+             data.get('emailRemindersEnabled', true) is bool;
     }
 
     function isValidSchedule(data) {

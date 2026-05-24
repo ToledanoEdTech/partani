@@ -1,14 +1,14 @@
 import { collection, doc, getDocs, getDoc, setDoc, deleteDoc, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Teacher, Schedule, Report } from '../types';
-import { handleFirestoreError, OperationType } from './firestore-errors';
+import { handleFirestoreError, OperationType, reportFirestoreSnapshotError } from './firestore-errors';
 
 export function subscribeToTeachers(callback: (teachers: Teacher[]) => void, errorCallback?: (err: Error) => void) {
   return onSnapshot(collection(db, 'teachers'), (snapshot) => {
     const teachers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Teacher));
     callback(teachers);
   }, (error) => {
-    handleFirestoreError(error, OperationType.LIST, 'teachers');
+    reportFirestoreSnapshotError(error, OperationType.LIST, 'teachers');
     if(errorCallback) errorCallback(new Error(error.message));
   });
 }
@@ -22,7 +22,7 @@ export function subscribeToSchedules(teacherEmail: string | null, callback: (sch
     const schedules = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() } as Schedule));
     callback(schedules);
   }, (error: any) => {
-    handleFirestoreError(error, OperationType.LIST, 'schedules');
+    reportFirestoreSnapshotError(error, OperationType.LIST, 'schedules');
     if(errorCallback) errorCallback(new Error(error.message));
   });
 }
@@ -36,7 +36,7 @@ export function subscribeToReports(teacherEmail: string | null, callback: (repor
     const reports = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() } as Report));
     callback(reports);
   }, (error: any) => {
-    handleFirestoreError(error, OperationType.LIST, 'reports');
+    reportFirestoreSnapshotError(error, OperationType.LIST, 'reports');
     if(errorCallback) errorCallback(new Error(error.message));
   });
 }
@@ -112,13 +112,19 @@ export async function deleteReport(id: string) {
 }
 
 export function subscribeToSettings(callback: (settings: any) => void) {
-  return onSnapshot(doc(db, 'settings', 'general'), (snapshot) => {
-    if (snapshot.exists()) {
-      callback(snapshot.data());
-    } else {
-      callback({});
-    }
-  });
+  return onSnapshot(
+    doc(db, 'settings', 'general'),
+    (snapshot) => {
+      if (snapshot.exists()) {
+        callback(snapshot.data());
+      } else {
+        callback({});
+      }
+    },
+    (error) => {
+      reportFirestoreSnapshotError(error, OperationType.GET, 'settings/general');
+    },
+  );
 }
 
 export async function updateSettings(settings: any) {

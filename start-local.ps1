@@ -28,28 +28,58 @@ try {
     exit 1
 }
 
-# Install dependencies if needed (check for vite specifically since npm install can crash mid-way)
+# Verify .env.local exists and contains Firebase config
+if (-not (Test-Path ".env.local")) {
+    Write-Host "[ERROR] .env.local not found." -ForegroundColor Red
+    Write-Host "Copy .env.example to .env.local and fill in your Firebase values." -ForegroundColor Yellow
+    Read-Host "Press Enter to exit"
+    exit 1
+}
+
+$envContent = Get-Content ".env.local" -Raw
+$requiredKeys = @(
+    "VITE_FIREBASE_API_KEY",
+    "VITE_FIREBASE_AUTH_DOMAIN",
+    "VITE_FIREBASE_PROJECT_ID",
+    "VITE_FIREBASE_APP_ID"
+)
+$missingKeys = @()
+foreach ($key in $requiredKeys) {
+    if ($envContent -notmatch "(?m)^$key\s*=\s*[`"']?[^`"'\s]+") {
+        $missingKeys += $key
+    }
+}
+if ($missingKeys.Count -gt 0) {
+    Write-Host "[ERROR] .env.local is missing required keys:" -ForegroundColor Red
+    $missingKeys | ForEach-Object { Write-Host "        - $_" -ForegroundColor Red }
+    Write-Host "See .env.example for the full list and refill .env.local." -ForegroundColor Yellow
+    Read-Host "Press Enter to exit"
+    exit 1
+}
+Write-Host "[INFO] .env.local is valid (Firebase config present)." -ForegroundColor Green
+
+# Kill any existing process holding port 3000
+$existing = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
+if ($existing) {
+    foreach ($conn in $existing) {
+        Write-Host "[INFO] Stopping previous dev server on port 3000 (PID $($conn.OwningProcess))..." -ForegroundColor Yellow
+        Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Milliseconds 500
+}
+
+# Install dependencies if needed
 if (-not (Test-Path -Path "node_modules\vite")) {
     Write-Host "[INFO] Dependencies not found. Running 'npm install'..." -ForegroundColor Yellow
     Write-Host "This may take a few minutes on the first run." -ForegroundColor Yellow
     Write-Host ""
     npm install --no-audit --no-fund
     if ($LASTEXITCODE -ne 0) {
-        Write-Host ""
         Write-Host "[ERROR] npm install failed. See errors above." -ForegroundColor Red
         Read-Host "Press Enter to exit"
         exit 1
     }
-    Write-Host ""
     Write-Host "[INFO] Dependencies installed successfully." -ForegroundColor Green
-    Write-Host ""
-}
-
-# Warn if no .env.local
-if (-not (Test-Path -Path ".env.local")) {
-    Write-Host "[WARNING] .env.local not found." -ForegroundColor Yellow
-    Write-Host "The app will not be able to connect to Firebase without it." -ForegroundColor Yellow
-    Write-Host "Copy .env.example to .env.local and fill in your Firebase config." -ForegroundColor Yellow
     Write-Host ""
 }
 

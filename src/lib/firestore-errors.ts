@@ -26,8 +26,15 @@ interface FirestoreErrorInfo {
   }
 }
 
-export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
+/**
+ * Build a structured Firestore-error log payload. Pure — does not throw,
+ * does not log. Use it from both write paths (where you want to surface
+ * the error to the caller via re-throw) and read/snapshot paths (where
+ * throwing inside the listener callback can break the listener and bubble
+ * up as an unhandled rejection that may even trigger a dev-mode reload).
+ */
+function buildErrorInfo(error: unknown, operationType: OperationType, path: string | null): FirestoreErrorInfo {
+  return {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
       userId: auth.currentUser?.uid,
@@ -43,6 +50,31 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path
   };
+}
+
+/**
+ * Original entry point for write/get operations: log + throw so the caller
+ * sees the failure. Snapshot listeners must NOT use this — see
+ * `reportFirestoreSnapshotError` below.
+ */
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo = buildErrorInfo(error, operationType, path);
   console.error('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
+}
+
+/**
+ * Variant for `onSnapshot` error callbacks — logs but does NOT throw.
+ * Throwing inside an `onSnapshot` error callback yields an unhandled
+ * promise rejection inside Firebase's stream handling, which in some
+ * setups (e.g. Vite dev server) can manifest as the page seemingly
+ * "refreshing every few seconds" while the listener silently dies.
+ */
+export function reportFirestoreSnapshotError(
+  error: unknown,
+  operationType: OperationType,
+  path: string | null,
+) {
+  const errInfo = buildErrorInfo(error, operationType, path);
+  console.error('Firestore Snapshot Error: ', JSON.stringify(errInfo));
 }

@@ -27,6 +27,30 @@ echo.
 REM Fix for SSL certificate issues on Windows networks
 set "NODE_OPTIONS=--use-system-ca"
 
+REM Verify .env.local exists and has the required Firebase config
+if not exist ".env.local" (
+    echo [ERROR] .env.local not found in this folder.
+    echo The app needs Firebase config in .env.local to run.
+    echo Copy .env.example to .env.local and fill in your Firebase values.
+    pause
+    exit /b 1
+)
+
+findstr /b "VITE_FIREBASE_API_KEY=" ".env.local" >nul
+if errorlevel 1 (
+    echo [ERROR] .env.local is missing VITE_FIREBASE_API_KEY.
+    echo Open .env.local and make sure all VITE_FIREBASE_* variables are set.
+    echo Look at .env.example for the full list.
+    pause
+    exit /b 1
+)
+
+REM Kill any existing process holding port 3000 from previous runs
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":3000 " ^| findstr "LISTENING"') do (
+    echo [INFO] Stopping previous dev server on port 3000 ^(PID %%P^)...
+    taskkill /F /PID %%P >nul 2>nul
+)
+
 if not exist "node_modules\vite" (
     echo [INFO] Dependencies not found. Running 'npm install'...
     echo This may take a few minutes on the first run.
@@ -40,13 +64,6 @@ if not exist "node_modules\vite" (
     )
     echo.
     echo [INFO] Dependencies installed successfully.
-    echo.
-)
-
-if not exist ".env.local" (
-    echo [WARNING] .env.local not found.
-    echo The app will not be able to connect to Firebase without it.
-    echo Copy .env.example to .env.local and fill in your Firebase config.
     echo.
 )
 
