@@ -22,15 +22,20 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Resend } from 'resend';
 
-import { EMAIL_SUBJECT, renderReminderEmail } from '../_lib/email-template';
-import { getAdminDb } from '../_lib/firebase-admin';
+// Explicit ".js" extensions on local imports are mandatory because
+// `package.json` declares `"type": "module"` — Node ESM resolution
+// in the Vercel runtime rejects extensionless relative specifiers.
+// TypeScript with `moduleResolution: "bundler"` understands these
+// `.js` paths as referring to the corresponding `.ts` source files.
+import { EMAIL_SUBJECT, renderReminderEmail } from '../_lib/email-template.js';
+import { getAdminDb } from '../_lib/firebase-admin.js';
 import {
   formatDateInTZ,
   getMissingLessonsForTeacherThisWeek,
   getWeekKey,
   ISRAEL_TIMEZONE,
-} from '../../src/lib/lesson-stats';
-import type { EmailReminderSettings, Report, Schedule, Teacher } from '../../src/types';
+} from '../../src/lib/lesson-stats.js';
+import type { EmailReminderSettings, Report, Schedule, Teacher } from '../../src/types.js';
 
 const DEFAULT_MIN_MISSING = 2;
 

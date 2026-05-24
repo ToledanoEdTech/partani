@@ -26,10 +26,10 @@ export default async function handler(_req: any, res: any) {
   await probe('resend', () => import('resend'));
   await probe('firebase-admin/app', () => import('firebase-admin/app'));
   await probe('firebase-admin/firestore', () => import('firebase-admin/firestore'));
-  await probe('local: ../_lib/firebase-admin', () => import('./_lib/firebase-admin'));
-  await probe('local: ../_lib/email-template', () => import('./_lib/email-template'));
-  await probe('local: ../../src/lib/lesson-stats', () => import('../src/lib/lesson-stats'));
-  await probe('local: ../../src/types', () => import('../src/types'));
+  await probe('local: ./_lib/firebase-admin.js', () => import('./_lib/firebase-admin.js'));
+  await probe('local: ./_lib/email-template.js', () => import('./_lib/email-template.js'));
+  await probe('local: ../src/lib/lesson-stats.js', () => import('../src/lib/lesson-stats.js'));
+  await probe('local: ../src/types.js', () => import('../src/types.js'));
 
   res.status(200).json({
     ok: true,
