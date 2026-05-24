@@ -5,7 +5,7 @@
  * teachers whose `emailRemindersEnabled` is not explicitly `false`,
  * counts the lessons in the *current IL calendar week* that have already
  * passed (date ≤ today, Asia/Jerusalem) and were not yet reported, and
- * emails the teacher via Resend if `missingCount >= minMissingLessons`.
+ * emails the teacher via Google SMTP if `missingCount >= minMissingLessons`.
  *
  * Dedup: at most one email per teacher per IL week. The dedup state lives
  * in `settings/general.emailReminders.lastSentByTeacher[teacherId] = weekKey`.
@@ -20,7 +20,6 @@
  * to make dry-runs easier.
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { Resend } from 'resend';
 
 // Explicit ".js" extensions on local imports are mandatory because
 // `package.json` declares `"type": "module"` — Node ESM resolution
@@ -29,6 +28,7 @@ import { Resend } from 'resend';
 // `.js` paths as referring to the corresponding `.ts` source files.
 import { EMAIL_SUBJECT, renderReminderEmail } from '../_lib/email-template.js';
 import { getAdminDb } from '../_lib/firebase-admin.js';
+import { resolveMailFrom, sendMail } from '../_lib/mailer.js';
 import {
   formatDateInTZ,
   getMissingLessonsForTeacherThisWeek,
@@ -150,21 +150,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const newLastSent: Record<string, string> = { ...lastSentByTeacher };
 
   // Resolve mail config up-front so we fail fast if misconfigured.
-  const resendKey = process.env.RESEND_API_KEY;
-  const mailFrom = process.env.MAIL_FROM;
   const appUrl = process.env.APP_URL || 'https://partani-topaz.vercel.app';
-
-  if (!dryRun && (!resendKey || !mailFrom)) {
-    res.status(500).json({
-      ok: false,
-      error:
-        'Missing mail config: RESEND_API_KEY and/or MAIL_FROM are not set. ' +
-        'Set them in the Vercel environment, or call this endpoint with ?dryRun=1.',
-    });
-    return;
+  let mailFrom: string | null = null;
+  if (!dryRun) {
+    try {
+      mailFrom = resolveMailFrom();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({
+        ok: false,
+        error: `${message} (or invoke with ?dryRun=1 to test without sending).`,
+      });
+      return;
+    }
   }
-
-  const resend = dryRun || !resendKey ? null : new Resend(resendKey);
 
   for (const t of teachers) {
     const base: Omit<ResultEntry, 'status' | 'reason'> = {
@@ -225,58 +224,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       continue;
     }
 
-    try {
-      const { html, text } = renderReminderEmail({
-        teacherName: t.name,
-        missingLessons: missing,
-        totalMissing: missing.length,
-        appUrl,
-      });
+    const { html, text } = renderReminderEmail({
+      teacherName: t.name,
+      missingLessons: missing,
+      totalMissing: missing.length,
+      appUrl,
+    });
 
-      const sendResult = await resend!.emails.send({
-        from: mailFrom!,
-        to: t.email,
-        subject: EMAIL_SUBJECT,
-        html,
-        text,
-        headers: {
-          // Helps email clients render Hebrew correctly even when "lang"
-          // attribute parsing is shaky.
-          'Content-Language': 'he',
-        },
-      });
+    const sendResult = await sendMail({
+      from: mailFrom!,
+      to: t.email,
+      subject: EMAIL_SUBJECT,
+      html,
+      text,
+      // Helps email clients render Hebrew correctly even when "lang"
+      // attribute parsing is shaky.
+      headers: { 'Content-Language': 'he' },
+    });
 
-      // The Resend SDK returns errors as `{ data: null, error: {...} }`
-      // instead of throwing — so a try/catch alone misses API errors.
-      // Treat any populated `error` field as a delivery failure.
-      const sendError = (sendResult as any)?.error;
-      if (sendError) {
-        const errMsg = `${sendError.name || 'resend_error'}: ${sendError.message || 'unknown'}`;
-        console.error(`[email-reminders] resend rejected send to ${t.email}:`, sendError);
-        results.push({
-          ...base,
-          status: 'error',
-          reason: errMsg,
-          missingCount: missing.length,
-        });
-        summary.errors++;
-        continue;
-      }
-
-      results.push({ ...base, status: 'sent', missingCount: missing.length });
-      summary.sent++;
-      newLastSent[t.id] = weekKey;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[email-reminders] failed to send to ${t.email}:`, message);
+    if (sendResult.ok === false) {
+      const errMsg = `${sendResult.error.name}: ${sendResult.error.message}`;
+      console.error(`[email-reminders] smtp rejected send to ${t.email}:`, sendResult.error);
       results.push({
         ...base,
         status: 'error',
-        reason: message,
+        reason: errMsg,
         missingCount: missing.length,
       });
       summary.errors++;
+      continue;
     }
+
+    results.push({ ...base, status: 'sent', missingCount: missing.length });
+    summary.sent++;
+    newLastSent[t.id] = weekKey;
   }
 
   if (!dryRun) {

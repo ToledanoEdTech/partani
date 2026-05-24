@@ -1,21 +1,26 @@
 /**
- * End-to-end Resend smoke-test endpoint.
+ * End-to-end SMTP smoke-test endpoint.
  *
  * Sends ONE Hebrew reminder email with sample/synthetic data to the
  * address passed in `?to=...`. Useful when you want to verify the
- * complete pipeline (env vars → Resend client → template → delivery)
- * without waiting for a teacher to have real missing lessons.
+ * complete pipeline (env vars → nodemailer transport → template →
+ * delivery) without waiting for a teacher to have real missing lessons.
  *
  * Auth: same Bearer-token model as the cron — protected by
  * `CRON_SECRET` so the endpoint can't be abused as a spam relay.
  *
  *   curl --ssl-no-revoke -H "Authorization: Bearer $CRON_SECRET" \
  *     "https://partani-topaz.vercel.app/api/test-email?to=you@example.com"
+ *
+ * Optional `?from=...` override is supported mainly so the operator
+ * can preview different display-name formats; the address part must
+ * still match SMTP_USER (or a configured Gmail alias) or Gmail will
+ * rewrite the From header.
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { Resend } from 'resend';
 
 import { EMAIL_SUBJECT, renderReminderEmail } from './_lib/email-template.js';
+import { resolveMailFrom, sendMail } from './_lib/mailer.js';
 import type { MissingLesson } from '../src/lib/lesson-stats.js';
 
 function isAuthorized(req: VercelRequest): boolean {
@@ -39,18 +44,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
-  const resendKey = process.env.RESEND_API_KEY;
-  // Allow overriding MAIL_FROM via `?from=` to test verified-domain vs
-  // sandbox sender quickly, without round-tripping through the Vercel UI.
   const fromOverride = typeof req.query.from === 'string' ? req.query.from : undefined;
-  const mailFrom = fromOverride || process.env.MAIL_FROM;
   const appUrl = process.env.APP_URL || 'https://partani-topaz.vercel.app';
 
-  if (!resendKey || !mailFrom) {
-    res.status(500).json({
-      ok: false,
-      error: 'Missing RESEND_API_KEY or MAIL_FROM env vars.',
-    });
+  let mailFrom: string;
+  try {
+    mailFrom = resolveMailFrom(fromOverride);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ ok: false, error: message });
     return;
   }
 
@@ -94,45 +96,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     appUrl,
   });
 
-  const resend = new Resend(resendKey);
-  try {
-    const result = await resend.emails.send({
-      from: mailFrom,
-      to,
-      subject: `[TEST] ${EMAIL_SUBJECT}`,
-      html,
-      text,
-      headers: { 'Content-Language': 'he' },
-    });
+  const result = await sendMail({
+    from: mailFrom,
+    to,
+    subject: `[TEST] ${EMAIL_SUBJECT}`,
+    html,
+    text,
+    headers: { 'Content-Language': 'he' },
+  });
 
-    // The Resend SDK does NOT throw on API errors — it returns
-    // `{ data: null, error: {...} }`. We surface that explicitly so the
-    // caller can rely on the HTTP status / `ok` flag alone.
-    const resendError = (result as any)?.error;
-    if (resendError) {
-      const statusCode = Number(resendError.statusCode) || 500;
-      res.status(statusCode).json({
-        ok: false,
-        from: mailFrom,
-        attemptedTo: to,
-        error: {
-          name: resendError.name,
-          statusCode: resendError.statusCode,
-          message: resendError.message,
-        },
-      });
-      return;
-    }
-
-    res.status(200).json({
-      ok: true,
-      sentTo: to,
+  if (result.ok === false) {
+    res.status(502).json({
+      ok: false,
       from: mailFrom,
-      resendId: (result as any)?.data?.id ?? null,
+      attemptedTo: to,
+      error: result.error,
     });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error('[test-email] send failed:', err);
-    res.status(500).json({ ok: false, error: message });
+    return;
   }
+
+  res.status(200).json({
+    ok: true,
+    from: mailFrom,
+    sentTo: to,
+    messageId: result.messageId,
+    accepted: result.accepted,
+    rejected: result.rejected,
+    smtpResponse: result.response,
+  });
 }

@@ -55,7 +55,7 @@ npm run dev
 המערכת שולחת מייל בעברית למורים פעילים שלא דיווחו על **לפחות 2 שיעורים** שכבר התקיימו בשבוע הנוכחי. הקוד מורכב מ-3 שכבות:
 
 - **לוגיקה משותפת** — `src/lib/lesson-stats.ts` (חישוב חוסרי דיווח, גבולות שבוע ב-`Asia/Jerusalem`). מיובא הן ב-`App.tsx` והן ב-cron.
-- **Cron handler** — `api/cron/email-reminders.ts` (Vercel Serverless + Firebase Admin SDK + Resend).
+- **Cron handler** — `api/cron/email-reminders.ts` (Vercel Serverless + Firebase Admin SDK + Gmail SMTP via `nodemailer`).
 - **ממשק ניהול** — שני אזורים ב-`App.tsx`: סקשן "תזכורות מייל" בטאב **הגדרות** (toggle גלובלי, מינימום שיעורים, סטטוס ריצה אחרונה), ועמודת מתג לכל מורה בטאב **ניהול מורים**.
 
 ### לוח זמנים
@@ -71,17 +71,19 @@ npm run dev
 
 ### הגדרה ראשונית
 
-1. **חשבון Resend** — צור חשבון ב-[resend.com](https://resend.com), אמת דומיין (או השתמש בכתובת `onboarding@resend.dev` לבדיקות), והוצא API key.
-2. **Service Account של Firebase** — Firebase Console ← Project Settings ← Service accounts ← `Generate new private key`. שמור את ה-JSON.
-3. **הוספת משתני סביבה ב-Vercel** (Project ← Settings ← Environment Variables):
-   - `RESEND_API_KEY` — מה-Resend
-   - `MAIL_FROM` — לדוגמה `"מערכת דיווחים <noreply@your-domain.com>"`
+1. **חשבון Gmail / Workspace ייעודי** — הכי נקי לפתוח חשבון נפרד לשליחת תזכורות (למשל `partani@zvialod.com`). אין צורך לאמת DNS — Google חתום על הדומיין מבפנים.
+2. **App Password** — בחשבון השליחה: ודא ש-[2-Step Verification](https://myaccount.google.com/signinoptions/two-step-verification) דלוק, ואז צור App Password ב-[myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) (שם רלוונטי, למשל "Partani"). תקבל מחרוזת בת 16 תווים.
+3. **Service Account של Firebase** — Firebase Console ← Project Settings ← Service accounts ← `Generate new private key`. שמור את ה-JSON.
+4. **הוספת משתני סביבה ב-Vercel** (Project ← Settings ← Environment Variables):
+   - `SMTP_USER` — כתובת השליחה המלאה (לדוגמה `partani@zvialod.com`)
+   - `SMTP_APP_PASSWORD` — ה-16 תווים מ-Google (רווחים מותרים — נחתכים אוטומטית)
+   - `MAIL_FROM` — אופציונלי; ברירת מחדל ל-`SMTP_USER`. לדוגמה `"מערכת דיווחים <partani@zvialod.com>"`
    - `APP_URL` — `https://partani-topaz.vercel.app` או הדומיין המותאם
    - `FIREBASE_ADMIN_PROJECT_ID`, `FIREBASE_ADMIN_CLIENT_EMAIL`, `FIREBASE_ADMIN_PRIVATE_KEY` — מה-JSON של ה-service account. את ה-`private_key` הדבק במלואו; שורות חדשות (`\n`) מומרות אוטומטית ע"י ה-handler.
    - `FIREBASE_ADMIN_DATABASE_ID` — רק אם השתמשת ב-Named DB (אחרת השאר ריק או `(default)`).
    - `CRON_SECRET` — מחרוזת אקראית ארוכה (16+ תווים). Vercel ישלח אותה אוטומטית בהדר `Authorization: Bearer ...` כשה-cron מופעל.
-4. **חוקי Firestore** — אחרי `git pull` של עדכון `firestore.rules` (הוספת `emailRemindersEnabled` כשדה אופציונלי), העלה אותם דרך Firebase Console או `firebase deploy --only firestore:rules`.
-5. **Redeploy** — אחרי הוספת משתני הסביבה, בצע Redeploy ב-Vercel (בלי build cache בפעם הראשונה).
+5. **חוקי Firestore** — אחרי `git pull` של עדכון `firestore.rules` (הוספת `emailRemindersEnabled` כשדה אופציונלי), העלה אותם דרך Firebase Console או `firebase deploy --only firestore:rules`.
+6. **Redeploy** — אחרי הוספת משתני הסביבה, בצע Redeploy ב-Vercel (בלי build cache בפעם הראשונה).
 
 ### בדיקות ידניות
 
