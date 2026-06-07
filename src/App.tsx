@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   BookOpen, Users, Calendar, CheckCircle, XCircle, Plus, Trash2, Edit3,
-  Clock, TrendingUp, TrendingDown, LogOut, GraduationCap,
+  Clock, TrendingUp, TrendingDown, LogOut,
   FileText, AlertCircle, Menu, X, Lock, Download, Upload, Settings, ClipboardCheck
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
@@ -25,6 +25,8 @@ import {
   addTeacher, updateTeacher, deleteTeacher, addSchedule, deleteSchedule, updateSchedule, addReport, deleteReport
 } from './lib/db';
 import { Teacher, Schedule, Report, EmailReminderSettings } from './types';
+import { AppLogos } from './components/AppLogos';
+import { SITE_TITLE } from './lib/branding';
 import * as XLSX from 'xlsx';
 import {
   ISRAEL_TIMEZONE,
@@ -161,8 +163,6 @@ const App = () => {
   const [schedule, setSchedule] = useState<Schedule[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
   const [settings, setSettings] = useState<{
-    logo1?: string;
-    logo2?: string;
     emailReminders?: EmailReminderSettings;
   }>({});
   
@@ -342,54 +342,6 @@ const App = () => {
     setAdminTab('overview');
     setTeacherTab('overview');
     setImpersonateTeacherId(null);
-  };
-
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>, key: 'logo1' | 'logo2') => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const img = new window.Image();
-      img.onload = async () => {
-        const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 800;
-        const MAX_HEIGHT = 800;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
-            width = MAX_WIDTH;
-          }
-        } else {
-          if (height > MAX_HEIGHT) {
-            width *= MAX_HEIGHT / height;
-            height = MAX_HEIGHT;
-          }
-        }
-        
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          const base64 = canvas.toDataURL('image/jpeg', 0.8);
-          
-          try {
-            await updateSettings({ [key]: base64 });
-            triggerNotification('לוגו עודכן בהצלחה');
-          } catch (error) {
-            triggerNotification('שגיאה בשמירת הלוגו. נסה תמונה קטנה יותר', 'error');
-          }
-        }
-      };
-      img.src = event.target?.result as string;
-    };
-    reader.readAsDataURL(file);
-    
-    if (e.target) e.target.value = '';
   };
 
   // --- Excel Upload Handlers ---
@@ -1003,20 +955,11 @@ const App = () => {
               <Menu className="w-6 h-6" />
             </button>
             
-            <div className="flex items-center gap-3 cursor-pointer">
-              {settings.logo1 ? (
-                <img src={settings.logo1} alt="Logo 1" className="h-10 w-auto object-contain rounded" />
-              ) : (
-                <div className="bg-amber-500 text-[#111827] p-2 rounded shadow-inner font-bold text-lg flex items-center justify-center">
-                  <GraduationCap className="w-6 h-6" />
-                </div>
-              )}
-              {settings.logo2 && (
-                <img src={settings.logo2} alt="Logo 2" className="h-10 w-auto object-contain rounded" />
-              )}
+            <div className="flex items-center gap-3">
+              <AppLogos />
               <div>
-                <h1 className="font-bold text-lg leading-tight md:text-xl">ישיבת צביה אלישיב לוד</h1>
-                <p className="text-amber-400 text-xs font-semibold">מערכת מעקב ולמידה - שיעורים פרטניים</p>
+                <h1 className="font-bold text-lg leading-tight md:text-xl">{SITE_TITLE}</h1>
+                <p className="text-amber-400 text-xs font-semibold">ישיבת צביה אלישיב לוד</p>
               </div>
             </div>
           </div>
@@ -1152,13 +1095,13 @@ const App = () => {
         {/* LANDING */}
         {!user && (
           <div className="py-12 px-4 max-w-6xl mx-auto flex items-center flex-col text-center space-y-8">
+            <AppLogos className="flex items-center justify-center gap-6" logoClassName="h-16 md:h-20 w-auto object-contain rounded" />
              <div className="text-center max-w-3xl mx-auto space-y-4">
               <span className="px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider bg-blue-100 text-blue-800 border border-blue-200">
-                צביה אלישיב - לוד
+                ישיבת צביה אלישיב לוד
               </span>
               <h2 className="text-3xl md:text-5xl font-bold text-[#111827] leading-tight">
-                מערכת דיווח ומעקב <br />
-                <span className="text-amber-600">שיעורים פרטניים</span>
+                {SITE_TITLE}
               </h2>
               <p className="text-gray-600 text-base md:text-lg">
                 כלי מקוון ומהיר לצוות המורים ולהנהלת הישיבה למעקב, תיעוד ובקרה אחר שיעורי הלמידה הפרטניים של תלמידנו. המערכת מזהה אותך אוטומטית כמורה או הנהלה.
@@ -1411,28 +1354,19 @@ const App = () => {
                 className="space-y-6"
               >
                 <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-100">
-                  <h3 className="text-xl font-bold mb-6 text-gray-900 border-b pb-4">הגדרות כלליות ולוגו</h3>
-                  <div className="grid md:grid-cols-2 gap-8">
-                    <div className="bg-gray-50 border border-gray-200 p-5 rounded-lg space-y-4">
-                      <label className="block text-sm font-bold text-gray-800">לוגו ימני (ראשי)</label>
-                      <input type="file" accept="image/*" onChange={(e) => handleLogoUpload(e, 'logo1')} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 cursor-pointer"/>
-                      {settings.logo1 && (
-                        <div className="mt-4">
-                          <img src={settings.logo1} className="h-20 w-auto object-contain border border-gray-200 rounded p-2 bg-white"/>
-                          <button onClick={() => updateSettings({logo1: null})} className="text-red-500 font-bold text-xs mt-2 hover:underline">הסר לוגו</button>
-                        </div>
-                      )}
+                  <h3 className="text-xl font-bold mb-4 text-gray-900 border-b pb-4">לוגואים ומיתוג</h3>
+                  <p className="text-sm text-gray-600 mb-4">
+                    הלוגואים נטענים מקבצים בתיקיית <code className="bg-gray-100 px-1 rounded">public/</code> בפרויקט.
+                    להחלפת לוגו, החלף את הקובץ המתאים ורענן את הדף.
+                  </p>
+                  <div className="grid md:grid-cols-2 gap-6">
+                    <div className="bg-gray-50 border border-gray-200 p-5 rounded-lg space-y-3">
+                      <p className="text-sm font-bold text-gray-800">לוגו ראשי — <code className="font-mono text-xs">public/logo1.png</code></p>
+                      <img src="/logo1.png" alt="לוגו ראשי" className="h-20 w-auto object-contain border border-gray-200 rounded p-2 bg-white" />
                     </div>
-                    
-                    <div className="bg-gray-50 border border-gray-200 p-5 rounded-lg space-y-4">
-                      <label className="block text-sm font-bold text-gray-800">לוגו שמאלי (משני)</label>
-                      <input type="file" accept="image/*" onChange={(e) => handleLogoUpload(e, 'logo2')} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 cursor-pointer"/>
-                      {settings.logo2 && (
-                        <div className="mt-4">
-                          <img src={settings.logo2} className="h-20 w-auto object-contain border border-gray-200 rounded p-2 bg-white"/>
-                          <button onClick={() => updateSettings({logo2: null})} className="text-red-500 font-bold text-xs mt-2 hover:underline">הסר לוגו</button>
-                        </div>
-                      )}
+                    <div className="bg-gray-50 border border-gray-200 p-5 rounded-lg space-y-3">
+                      <p className="text-sm font-bold text-gray-800">לוגו משני — <code className="font-mono text-xs">public/logo2.png</code></p>
+                      <img src="/logo2.png" alt="לוגו משני" className="h-20 w-auto object-contain border border-gray-200 rounded p-2 bg-white" />
                     </div>
                   </div>
                 </div>
@@ -2365,7 +2299,7 @@ const App = () => {
       </main>
 
       <footer className="bg-gray-900 text-gray-400 py-6 border-t border-gray-800 text-center text-xs mt-auto">
-        <p>ישיבת צביה אלישיב לוד © {new Date().getFullYear()} • מערכת דיווחים</p>
+        <p>ישיבת צביה אלישיב לוד © {new Date().getFullYear()} • {SITE_TITLE}</p>
       </footer>
 
       
