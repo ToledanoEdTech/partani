@@ -1,7 +1,17 @@
 import { collection, doc, getDocs, getDoc, setDoc, deleteDoc, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Teacher, Schedule, Report } from '../types';
+import { Teacher, Schedule, Report, Student } from '../types';
 import { handleFirestoreError, OperationType, reportFirestoreSnapshotError } from './firestore-errors';
+
+export function subscribeToStudents(callback: (students: Student[]) => void, errorCallback?: (err: Error) => void) {
+  return onSnapshot(collection(db, 'students'), (snapshot) => {
+    const students = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Student));
+    callback(students);
+  }, (error) => {
+    reportFirestoreSnapshotError(error, OperationType.LIST, 'students');
+    if (errorCallback) errorCallback(new Error(error.message));
+  });
+}
 
 export function subscribeToTeachers(callback: (teachers: Teacher[]) => void, errorCallback?: (err: Error) => void) {
   return onSnapshot(collection(db, 'teachers'), (snapshot) => {
@@ -39,6 +49,32 @@ export function subscribeToReports(teacherEmail: string | null, callback: (repor
     reportFirestoreSnapshotError(error, OperationType.LIST, 'reports');
     if(errorCallback) errorCallback(new Error(error.message));
   });
+}
+
+export async function addStudent(student: Omit<Student, 'id'>) {
+  try {
+    const newDocRef = doc(collection(db, 'students'));
+    await setDoc(newDocRef, student);
+    return newDocRef.id;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, 'students');
+  }
+}
+
+export async function updateStudent(id: string, updates: Partial<Student>) {
+  try {
+    await setDoc(doc(db, 'students', id), updates, { merge: true });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `students/${id}`);
+  }
+}
+
+export async function deleteStudent(id: string) {
+  try {
+    await deleteDoc(doc(db, 'students', id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `students/${id}`);
+  }
 }
 
 export async function addTeacher(teacher: Omit<Teacher, 'id'>) {
@@ -85,8 +121,20 @@ export async function updateSchedule(id: string, updates: Partial<Schedule>) {
   }
 }
 
+export async function deleteReportsForSchedule(scheduleId: string) {
+  try {
+    const q = query(collection(db, 'reports'), where('scheduleId', '==', scheduleId));
+    const snapshot = await getDocs(q);
+    await Promise.all(snapshot.docs.map((reportDoc) => deleteDoc(reportDoc.ref)));
+    return snapshot.size;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `reports?scheduleId=${scheduleId}`);
+  }
+}
+
 export async function deleteSchedule(id: string) {
   try {
+    await deleteReportsForSchedule(id);
     await deleteDoc(doc(db, 'schedules', id));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `schedules/${id}`);

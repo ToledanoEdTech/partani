@@ -122,7 +122,11 @@ export function getMissingLessonsForTeacherThisWeek(params: {
     if (offset === undefined) continue;
     const cellDateStr = addDaysToDateStr(weekStartStr, offset);
     if (cellDateStr > todayStr) continue; // not yet past — not missing
-    const reported = reports.some((r) => r.scheduleId === slot.id && r.date === cellDateStr);
+    const reported = reports.some((r) => {
+      if (r.scheduleId !== slot.id) return false;
+      if (r.date === cellDateStr) return true;
+      return getCanonicalLessonDate(slot, r.date) === cellDateStr;
+    });
     if (!reported) {
       out.push({
         scheduleId: slot.id,
@@ -250,20 +254,32 @@ export interface RangeComplianceCounts {
   reported: number;
   completed: number;
   missed: number;
-  unreported: number; // expected - reported, floored at 0
-  compliancePct: number; // reported / expected (0..100), 100 if expected===0
+  unreported: number;
+  compliancePct: number;
 }
 
-interface ReportIndexEntry {
+export interface ReportIndexEntry {
   scheduleId: string;
   teacherId: string;
   date: string;
   status: 'completed' | 'missed';
 }
 
-/** Index reports by `scheduleId|date` for O(1) "was this expected lesson reported?" lookup. */
+export interface DueExpectedSlot {
+  scheduleId: string;
+  teacherId: string;
+  date: string;
+  dow: number;
+}
+
+/** Build YYYY-MM-DD from calendar parts without timezone conversion. */
+export function calendarDateStr(year: number, monthIndex: number, day: number): string {
+  return `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/** Index reports by `scheduleId|date` for O(1) lookup. */
 export function indexReportsBySlotDate(
-  reports: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[]
+  reports: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[],
 ): Map<string, ReportIndexEntry> {
   const map = new Map<string, ReportIndexEntry>();
   for (const r of reports) {
@@ -277,55 +293,214 @@ export function indexReportsBySlotDate(
   return map;
 }
 
+/** Normalize a stored report date to the schedule weekday (legacy bad dates). */
+export function getCanonicalLessonDate(
+  schedule: Pick<Schedule, 'day'>,
+  pickedDateStr: string,
+): string {
+  const targetDow = DAY_MAP[schedule.day];
+  if (targetDow === undefined) return pickedDateStr;
+  const pickedDow = getDayOfWeekForDateStr(pickedDateStr);
+  if (pickedDow === targetDow) return pickedDateStr;
+  const weekStart = addDaysToDateStr(pickedDateStr, -pickedDow);
+  return addDaysToDateStr(weekStart, targetDow);
+}
+
+export function normalizeReportLessonDate(
+  report: Pick<Report, 'scheduleId' | 'date'>,
+  schedule: Pick<Schedule, 'day'> | undefined,
+): string {
+  if (!schedule) return report.date;
+  return getCanonicalLessonDate(schedule, report.date);
+}
+
+/** Index by scheduleId|lessonDate, normalizing legacy report dates. */
+export function indexReportsBySlotDateNormalized(
+  reports: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[],
+  schedules: Pick<Schedule, 'id' | 'day'>[],
+): Map<string, ReportIndexEntry> {
+  const scheduleById = new Map(schedules.map((s) => [s.id, s]));
+  const map = new Map<string, ReportIndexEntry>();
+  for (const report of reports) {
+    const schedule = scheduleById.get(report.scheduleId);
+    const lessonDate = normalizeReportLessonDate(report, schedule);
+    map.set(`${report.scheduleId}|${lessonDate}`, {
+      scheduleId: report.scheduleId,
+      teacherId: report.teacherId,
+      date: lessonDate,
+      status: report.status,
+    });
+  }
+  return map;
+}
+
+export function filterReportsForActiveSchedules<
+  T extends Pick<Report, 'scheduleId'>,
+>(reports: T[], scheduleIds: Set<string>): T[] {
+  return reports.filter((r) => scheduleIds.has(r.scheduleId));
+}
+
 /**
- * Per-teacher compliance counts across an inclusive date range.
- *
- * Semantics:
- *   • `expected` — for each of the teacher's current schedule entries,
- *     count how many dates in `[startStr, endStr]` fall on that entry's
- *     day-of-week. Assumes the schedule was active throughout the range.
- *   • `reported` — number of (scheduleId, date) pairs in the range that
- *     have a matching report document, regardless of status.
- *   • `completed` / `missed` — split of `reported` by report status.
- *   • `unreported` — `max(0, expected - reported)`. Approximation of
- *     "lessons the teacher was supposed to report but didn't".
- *   • `compliancePct` — `reported / expected * 100`, rounded, capped at 100.
+ * Due lessons in the analytics window: schedule occurrences in range whose
+ * calendar date has already passed (≤ todayStr). Future lessons are excluded
+ * so teachers are not penalised before the lesson happens.
  */
+export function computeDueExpectedSlots(
+  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day'>[],
+  startStr: string,
+  endStr: string,
+  todayStr: string,
+): DueExpectedSlot[] {
+  const slots: DueExpectedSlot[] = [];
+  for (const schedule of schedules) {
+    const dow = DAY_MAP[schedule.day];
+    if (dow === undefined) continue;
+    for (const date of getExpectedDatesForScheduleDay(schedule.day, startStr, endStr)) {
+      if (date > todayStr) continue;
+      slots.push({
+        scheduleId: schedule.id,
+        teacherId: schedule.teacherId,
+        date,
+        dow,
+      });
+    }
+  }
+  return slots;
+}
+
+function emptyComplianceCounts(): RangeComplianceCounts {
+  return {
+    expected: 0,
+    reported: 0,
+    completed: 0,
+    missed: 0,
+    unreported: 0,
+    compliancePct: 100,
+  };
+}
+
+function finalizeComplianceCounts(stats: RangeComplianceCounts): RangeComplianceCounts {
+  stats.unreported = Math.max(0, stats.expected - stats.reported);
+  stats.compliancePct =
+    stats.expected === 0
+      ? 100
+      : Math.min(100, Math.round((stats.reported / stats.expected) * 100));
+  return stats;
+}
+
 export function getTeacherComplianceInRange(params: {
   teacherId: string;
   schedules: Pick<Schedule, 'id' | 'teacherId' | 'day'>[];
   reports: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[];
   startStr: string;
   endStr: string;
+  todayStr: string;
   reportIndex?: Map<string, ReportIndexEntry>;
+  dueSlots?: DueExpectedSlot[];
 }): RangeComplianceCounts {
-  const { teacherId, schedules, startStr, endStr } = params;
-  const reportIndex = params.reportIndex ?? indexReportsBySlotDate(params.reports);
+  const { teacherId, schedules, reports, startStr, endStr, todayStr } = params;
+  const scheduleIds = new Set(schedules.map((s) => s.id));
+  const activeReports = filterReportsForActiveSchedules(reports, scheduleIds);
+  const reportIndex =
+    params.reportIndex ?? indexReportsBySlotDateNormalized(activeReports, schedules);
+  const dueSlots =
+    params.dueSlots ??
+    computeDueExpectedSlots(schedules, startStr, endStr, todayStr);
 
-  let expected = 0;
-  let reported = 0;
-  let completed = 0;
-  let missed = 0;
-
-  const teacherSchedules = schedules.filter((s) => s.teacherId === teacherId);
-  for (const slot of teacherSchedules) {
-    const dates = getExpectedDatesForScheduleDay(slot.day, startStr, endStr);
-    expected += dates.length;
-    for (const date of dates) {
-      const entry = reportIndex.get(`${slot.id}|${date}`);
-      if (entry) {
-        reported++;
-        if (entry.status === 'completed') completed++;
-        else if (entry.status === 'missed') missed++;
-      }
-    }
+  const stats = emptyComplianceCounts();
+  for (const slot of dueSlots) {
+    if (slot.teacherId !== teacherId) continue;
+    stats.expected++;
+    const entry = reportIndex.get(`${slot.scheduleId}|${slot.date}`);
+    if (!entry) continue;
+    stats.reported++;
+    if (entry.status === 'completed') stats.completed++;
+    else if (entry.status === 'missed') stats.missed++;
   }
 
-  const unreported = Math.max(0, expected - reported);
-  const compliancePct =
-    expected === 0 ? 100 : Math.min(100, Math.round((reported / expected) * 100));
+  return finalizeComplianceCounts(stats);
+}
 
-  return { expected, reported, completed, missed, unreported, compliancePct };
+export interface DashboardAnalytics {
+  scheduleIds: Set<string>;
+  activeReports: Report[];
+  reportIndex: Map<string, ReportIndexEntry>;
+  dueSlots: DueExpectedSlot[];
+  teacherCompliance: Map<string, RangeComplianceCounts>;
+  periodTotals: RangeComplianceCounts;
+  weeklyTrend: WeeklyTrendPoint[];
+  dayOfWeekStats: DayOfWeekStat[];
+}
+
+/** Single pass over schedules + active reports for the admin dashboard. */
+export function buildDashboardAnalytics(params: {
+  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day'>[];
+  reports: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[];
+  teacherIds: string[];
+  startStr: string;
+  endStr: string;
+  todayStr: string;
+}): DashboardAnalytics {
+  const { schedules, reports, teacherIds, startStr, endStr, todayStr } = params;
+  const scheduleIds = new Set(schedules.map((s) => s.id));
+  const activeReports = filterReportsForActiveSchedules(reports, scheduleIds);
+  const reportIndex = indexReportsBySlotDateNormalized(activeReports, schedules);
+  const dueSlots = computeDueExpectedSlots(schedules, startStr, endStr, todayStr);
+
+  const teacherCompliance = new Map<string, RangeComplianceCounts>();
+  for (const teacherId of teacherIds) {
+    teacherCompliance.set(teacherId, emptyComplianceCounts());
+  }
+
+  for (const slot of dueSlots) {
+    const stats = teacherCompliance.get(slot.teacherId);
+    if (!stats) continue;
+    stats.expected++;
+    const entry = reportIndex.get(`${slot.scheduleId}|${slot.date}`);
+    if (!entry) continue;
+    stats.reported++;
+    if (entry.status === 'completed') stats.completed++;
+    else if (entry.status === 'missed') stats.missed++;
+  }
+
+  for (const stats of teacherCompliance.values()) {
+    finalizeComplianceCounts(stats);
+  }
+
+  const periodTotals = emptyComplianceCounts();
+  for (const stats of teacherCompliance.values()) {
+    periodTotals.expected += stats.expected;
+    periodTotals.reported += stats.reported;
+    periodTotals.completed += stats.completed;
+    periodTotals.missed += stats.missed;
+    periodTotals.unreported += stats.unreported;
+  }
+  finalizeComplianceCounts(periodTotals);
+
+  const weeklyTrend = getWeeklyTrend({
+    schedules,
+    dueSlots,
+    reportIndex,
+    startStr,
+    endStr,
+    todayStr,
+  });
+
+  const dayOfWeekStats = getDayOfWeekStats({
+    dueSlots,
+    reportIndex,
+  });
+
+  return {
+    scheduleIds,
+    activeReports: activeReports as Report[],
+    reportIndex,
+    dueSlots,
+    teacherCompliance,
+    periodTotals,
+    weeklyTrend,
+    dayOfWeekStats,
+  };
 }
 
 export interface WeeklyTrendPoint {
@@ -347,42 +522,45 @@ export interface WeeklyTrendPoint {
  */
 export function getWeeklyTrend(params: {
   schedules: Pick<Schedule, 'id' | 'teacherId' | 'day'>[];
-  reports: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[];
+  reports?: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[];
+  dueSlots?: DueExpectedSlot[];
+  reportIndex?: Map<string, ReportIndexEntry>;
   startStr: string;
   endStr: string;
-  reportIndex?: Map<string, ReportIndexEntry>;
+  todayStr: string;
 }): WeeklyTrendPoint[] {
-  const { schedules, startStr, endStr } = params;
-  const reportIndex = params.reportIndex ?? indexReportsBySlotDate(params.reports);
+  const { schedules, startStr, endStr, todayStr } = params;
+  const reportIndex =
+    params.reportIndex ??
+    indexReportsBySlotDateNormalized(
+      filterReportsForActiveSchedules(
+        params.reports ?? [],
+        new Set(schedules.map((s) => s.id)),
+      ),
+      schedules,
+    );
+  const dueSlots =
+    params.dueSlots ?? computeDueExpectedSlots(schedules, startStr, endStr, todayStr);
   const weekStarts = enumerateWeekStartsBetween(startStr, endStr);
 
   return weekStarts.map((weekStart) => {
-    const sunFri = [0, 1, 2, 3, 4, 5];
     const weekEnd = addDaysToDateStr(weekStart, 5);
-    // Clamp the week's contribution to the visible range.
     const lo = weekStart < startStr ? startStr : weekStart;
     const hi = weekEnd > endStr ? endStr : weekEnd;
-    const datesInWindow = enumerateDatesBetween(lo, hi);
 
     let expected = 0;
     let reported = 0;
     let completed = 0;
     let missed = 0;
 
-    for (const date of datesInWindow) {
-      const dow = getDayOfWeekForDateStr(date);
-      if (!sunFri.includes(dow)) continue;
-      // For this date, count schedule entries that match the day.
-      for (const slot of schedules) {
-        if (DAY_MAP[slot.day] !== dow) continue;
-        expected++;
-        const entry = reportIndex.get(`${slot.id}|${date}`);
-        if (entry) {
-          reported++;
-          if (entry.status === 'completed') completed++;
-          else if (entry.status === 'missed') missed++;
-        }
-      }
+    for (const slot of dueSlots) {
+      if (slot.date < lo || slot.date > hi) continue;
+      expected++;
+      const entry = reportIndex.get(`${slot.scheduleId}|${slot.date}`);
+      if (!entry) continue;
+      reported++;
+      if (entry.status === 'completed') completed++;
+      else if (entry.status === 'missed') missed++;
     }
 
     return { weekStart, weekEnd, expected, reported, completed, missed };
@@ -408,29 +586,34 @@ const DAY_NAMES_BY_DOW: Record<number, string> = {
   6: 'שבת',
 };
 
-/** Day-of-week aggregate stats for Sun..Fri across the range. */
+/** Day-of-week aggregate stats for Sun..Fri across due lessons only. */
 export function getDayOfWeekStats(params: {
-  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day'>[];
-  reports: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[];
-  startStr: string;
-  endStr: string;
+  schedules?: Pick<Schedule, 'id' | 'teacherId' | 'day'>[];
+  reports?: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[];
+  dueSlots?: DueExpectedSlot[];
   reportIndex?: Map<string, ReportIndexEntry>;
+  startStr?: string;
+  endStr?: string;
+  todayStr?: string;
 }): DayOfWeekStat[] {
-  const { schedules, startStr, endStr } = params;
-  const reportIndex = params.reportIndex ?? indexReportsBySlotDate(params.reports);
-  const dates = enumerateDatesBetween(startStr, endStr);
+  const reportIndex = params.reportIndex ?? indexReportsBySlotDate(params.reports ?? []);
+  const dueSlots =
+    params.dueSlots ??
+    computeDueExpectedSlots(
+      params.schedules ?? [],
+      params.startStr ?? '1970-01-01',
+      params.endStr ?? '2099-12-31',
+      params.todayStr ?? '2099-12-31',
+    );
 
   const acc: Record<number, { expected: number; reported: number }> = {};
   for (let i = 0; i <= 5; i++) acc[i] = { expected: 0, reported: 0 };
 
-  for (const date of dates) {
-    const dow = getDayOfWeekForDateStr(date);
-    if (dow > 5) continue;
-    for (const slot of schedules) {
-      if (DAY_MAP[slot.day] !== dow) continue;
-      acc[dow].expected++;
-      const entry = reportIndex.get(`${slot.id}|${date}`);
-      if (entry) acc[dow].reported++;
+  for (const slot of dueSlots) {
+    if (slot.dow > 5) continue;
+    acc[slot.dow].expected++;
+    if (reportIndex.has(`${slot.scheduleId}|${slot.date}`)) {
+      acc[slot.dow].reported++;
     }
   }
 

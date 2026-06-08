@@ -70,6 +70,23 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
  * setups (e.g. Vite dev server) can manifest as the page seemingly
  * "refreshing every few seconds" while the listener silently dies.
  */
+/** Map a thrown Firestore error to a short Hebrew message for toasts. */
+export function getFirestoreUserMessage(error: unknown, fallback = 'שגיאה בפעולה'): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (raw.includes('permission') || raw.includes('PERMISSION_DENIED') || raw.includes('insufficient permissions')) {
+    return 'אין הרשאה לשמור ב-Firestore. יש לפרוס את חוקי האבטחה: הרץ deploy-firestore-rules.bat (או firebase deploy --only firestore:rules).';
+  }
+  try {
+    const parsed = JSON.parse(raw) as { error?: string };
+    if (parsed.error?.includes('permission') || parsed.error?.includes('PERMISSION_DENIED')) {
+      return 'אין הרשאה לשמור ב-Firestore. יש לפרוס את חוקי האבטחה: הרץ deploy-firestore-rules.bat (או firebase deploy --only firestore:rules).';
+    }
+  } catch {
+    // not JSON — use fallback
+  }
+  return fallback;
+}
+
 export function reportFirestoreSnapshotError(
   error: unknown,
   operationType: OperationType,

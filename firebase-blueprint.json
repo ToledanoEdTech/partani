@@ -22,6 +22,17 @@
       },
       "required": ["name", "email", "subject", "active"]
     },
+    "Student": {
+      "title": "Student",
+      "description": "A student in the Yeshiva",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "className": { "type": "string" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["name", "className", "active"]
+    },
     "Schedule": {
       "title": "Schedule",
       "description": "A specific class schedule slot",
@@ -32,7 +43,9 @@
         "day": { "type": "string" },
         "hour": { "type": "string" },
         "studentName": { "type": "string" },
-        "subject": { "type": "string" }
+        "subject": { "type": "string" },
+        "lessonType": { "type": "string", "enum": ["fixed", "flexible"] },
+        "studentIds": { "type": "array", "items": { "type": "string" } }
       },
       "required": ["teacherId", "teacherEmail", "day", "hour", "studentName", "subject"]
     },
@@ -47,7 +60,8 @@
         "date": { "type": "string" },
         "status": { "type": "string", "enum": ["completed", "missed"] },
         "text": { "type": "string" },
-        "timestamp": { "type": "string" }
+        "timestamp": { "type": "string" },
+        "attendedStudentIds": { "type": "array", "items": { "type": "string" } }
       },
       "required": ["scheduleId", "teacherId", "teacherEmail", "date", "status", "text", "timestamp"]
     }
@@ -56,6 +70,10 @@
     "admins/{email}": {
       "schema": "Admin",
       "description": "Stores admin information. ID is the email."
+    },
+    "students/{studentId}": {
+      "schema": "Student",
+      "description": "Stores student roster by class."
     },
     "teachers/{teacherId}": {
       "schema": "Teacher",

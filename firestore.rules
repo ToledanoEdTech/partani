@@ -54,25 +54,45 @@ service cloud.firestore {
              data.get('emailRemindersEnabled', true) is bool;
     }
 
+    function isValidStudent(data) {
+      return data.keys().hasAll(['name', 'className', 'active']) &&
+             data.keys().hasOnly(['name', 'className', 'active']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 128 &&
+             data.className is string && data.className.size() > 0 && data.className.size() <= 64 &&
+             data.active is bool;
+    }
+
+    function isValidStudentIdList(list) {
+      return list is list && list.size() <= 50 &&
+             list.size() == 0 || (
+               list[0] is string && list[0].size() <= 128
+             );
+    }
+
     function isValidSchedule(data) {
-      return data.keys().hasAll(['teacherId', 'teacherEmail', 'day', 'hour', 'studentName', 'subject']) && data.keys().size() == 6 &&
+      return data.keys().hasAll(['teacherId', 'teacherEmail', 'day', 'hour', 'studentName', 'subject']) &&
              data.teacherId is string && data.teacherId.size() <= 128 &&
              data.teacherEmail is string && data.teacherEmail.size() <= 128 &&
              data.day is string && data.day.size() <= 32 &&
              data.hour is string && data.hour.size() <= 32 &&
              data.studentName is string && data.studentName.size() <= 128 &&
-             data.subject is string && data.subject.size() <= 128;
+             data.subject is string && data.subject.size() <= 128 &&
+             (!data.keys().hasAny(['lessonType']) || (
+               data.lessonType is string && data.lessonType.matches('^(fixed|flexible)$')
+             )) &&
+             (!data.keys().hasAny(['studentIds']) || isValidStudentIdList(data.studentIds));
     }
 
     function isValidReport(data) {
-      return data.keys().hasAll(['scheduleId', 'teacherId', 'teacherEmail', 'date', 'status', 'text', 'timestamp']) && data.keys().size() == 7 &&
+      return data.keys().hasAll(['scheduleId', 'teacherId', 'teacherEmail', 'date', 'status', 'text', 'timestamp']) &&
              data.scheduleId is string && data.scheduleId.size() <= 128 &&
              data.teacherId is string && data.teacherId.size() <= 128 &&
              data.teacherEmail is string && data.teacherEmail.size() <= 128 &&
              data.date is string && data.date.size() <= 32 &&
              data.status is string && data.status.matches('^(completed|missed)$') &&
              data.text is string && data.text.size() <= 1024 &&
-             data.timestamp is string && data.timestamp.size() <= 128;
+             data.timestamp is string && data.timestamp.size() <= 128 &&
+             (!data.keys().hasAny(['attendedStudentIds']) || isValidStudentIdList(data.attendedStudentIds));
     }
 
     // Collections
@@ -87,6 +107,13 @@ service cloud.firestore {
     match /settings/{docId} {
       allow read: if true;
       allow write: if isAdmin();
+    }
+
+    match /students/{studentId} {
+      allow read: if isVerifiedUser();
+      allow create: if isValidId(studentId) && isAdmin() && isValidStudent(incoming());
+      allow update: if isValidId(studentId) && isAdmin() && isValidStudent(incoming());
+      allow delete: if isValidId(studentId) && isAdmin();
     }
 
     match /teachers/{teacherId} {
