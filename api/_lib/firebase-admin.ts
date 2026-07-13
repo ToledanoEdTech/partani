@@ -1,4 +1,5 @@
 import { cert, getApps, initializeApp, type App } from 'firebase-admin/app';
+import { getAuth, type Auth } from 'firebase-admin/auth';
 import { getFirestore, type Firestore } from 'firebase-admin/firestore';
 
 /**
@@ -46,4 +47,8 @@ export function getAdminDb(): Firestore {
   // The two-arg form exists since firebase-admin v12 for named databases.
   // For "(default)" the single-arg form is equivalent.
   return dbId && dbId !== '(default)' ? getFirestore(app, dbId) : getFirestore(app);
+}
+
+export function getAdminAuth(): Auth {
+  return getAuth(getAdminApp());
 }

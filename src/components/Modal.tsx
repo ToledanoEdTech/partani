@@ -88,7 +88,7 @@ const Modal: React.FC<ModalProps> = ({
       {open && (
         <motion.div
           key="modal-root"
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
           initial="initial"
           animate="enter"
           exit="exit"
@@ -105,7 +105,7 @@ const Modal: React.FC<ModalProps> = ({
             role="dialog"
             aria-modal="true"
             aria-label={typeof title === 'string' ? title : undefined}
-            className={`relative bg-white rounded-lg shadow-xl w-full ${maxWidthClassName} p-6`}
+            className={`relative bg-white shadow-xl w-full ${maxWidthClassName} p-4 sm:p-6 max-h-[90vh] overflow-y-auto rounded-t-2xl sm:rounded-lg`}
             variants={modalContentVariants}
             transition={contentTransition}
           >

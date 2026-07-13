@@ -76,13 +76,25 @@ export function getFirestoreUserMessage(error: unknown, fallback = 'שגיאה �
   if (raw.includes('permission') || raw.includes('PERMISSION_DENIED') || raw.includes('insufficient permissions')) {
     return 'אין הרשאה לשמור ב-Firestore. יש לפרוס את חוקי האבטחה: הרץ deploy-firestore-rules.bat (או firebase deploy --only firestore:rules).';
   }
+  if (raw.includes('יש להתחבר מחדש')) {
+    return raw;
+  }
   try {
     const parsed = JSON.parse(raw) as { error?: string };
-    if (parsed.error?.includes('permission') || parsed.error?.includes('PERMISSION_DENIED')) {
+    if (parsed.error?.includes('permission') || parsed.error?.includes('PERMISSION_DENIED') || parsed.error?.includes('insufficient permissions')) {
       return 'אין הרשאה לשמור ב-Firestore. יש לפרוס את חוקי האבטחה: הרץ deploy-firestore-rules.bat (או firebase deploy --only firestore:rules).';
     }
+    if (parsed.error === 'forbidden' || parsed.error === 'unauthorized') {
+      return 'אין הרשאת מנהל לפעולה זו. יש להתחבר עם חשבון המנהל.';
+    }
+    if (typeof parsed.error === 'string' && parsed.error.trim()) {
+      return parsed.error;
+    }
   } catch {
-    // not JSON — use fallback
+    // not JSON — use fallback / raw heuristics below
+  }
+  if (raw === 'forbidden' || raw === 'unauthorized') {
+    return 'אין הרשאת מנהל לפעולה זו. יש להתחבר עם חשבון המנהל.';
   }
   return fallback;
 }

@@ -11,6 +11,15 @@
   "functions": {
     "api/cron/email-reminders.ts": {
       "maxDuration": 60
+    },
+    "api/admin/send-reminders.ts": {
+      "maxDuration": 60
+    },
+    "api/admin/test-email.ts": {
+      "maxDuration": 30
+    },
+    "api/admin/teachers.ts": {
+      "maxDuration": 30
     }
   },
   "crons": [

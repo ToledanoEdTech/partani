@@ -57,13 +57,13 @@ const StudentPicker: React.FC<StudentPickerProps> = ({
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <label className="text-xs font-bold text-gray-600">{label}</label>
         {lastSessionAvailable && (
           <button
             type="button"
             onClick={selectLastSession}
-            className="text-xs font-bold text-indigo-700 hover:text-indigo-900 flex items-center gap-1"
+            className="text-xs font-bold text-indigo-700 hover:text-indigo-900 flex items-center gap-1 self-start sm:self-auto"
           >
             <RotateCcw className="w-3 h-3" />
             כמו בפעם הקודמת
@@ -71,8 +71,8 @@ const StudentPicker: React.FC<StudentPickerProps> = ({
         )}
       </div>
 
-      <div className="flex gap-2">
-        <div className="relative flex-1">
+      <div className="flex flex-col sm:flex-row gap-2">
+        <div className="relative flex-1 min-w-0">
           <Search className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
             type="text"
@@ -85,7 +85,7 @@ const StudentPicker: React.FC<StudentPickerProps> = ({
         <select
           value={classFilter}
           onChange={(e) => setClassFilter(e.target.value)}
-          className="py-1.5 px-2 border rounded-lg text-sm bg-white min-w-[90px]"
+          className="py-1.5 px-2 border rounded-lg text-sm bg-white w-full sm:w-auto sm:min-w-[90px]"
         >
           <option value="">כל הכיתות</option>
           {classNames.map((c) => (

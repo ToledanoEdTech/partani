@@ -1,6 +1,7 @@
 import { collection, doc, getDocs, getDoc, setDoc, deleteDoc, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Teacher, Schedule, Report, Student } from '../types';
+import { adminAddTeacher, adminDeleteTeacher, adminUpdateTeacher } from './admin-teachers-api';
 import { handleFirestoreError, OperationType, reportFirestoreSnapshotError } from './firestore-errors';
 
 export function subscribeToStudents(callback: (students: Student[]) => void, errorCallback?: (err: Error) => void) {
@@ -78,10 +79,9 @@ export async function deleteStudent(id: string) {
 }
 
 export async function addTeacher(teacher: Omit<Teacher, 'id'>) {
+  // Admin SDK via API — client Firestore rules were blocking admin writes in production.
   try {
-    const newDocRef = doc(collection(db, 'teachers'));
-    await setDoc(newDocRef, teacher);
-    return newDocRef.id;
+    return await adminAddTeacher(teacher);
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, 'teachers');
   }
@@ -89,7 +89,8 @@ export async function addTeacher(teacher: Omit<Teacher, 'id'>) {
 
 export async function updateTeacher(id: string, updates: Partial<Teacher>) {
   try {
-    await setDoc(doc(db, 'teachers', id), updates, { merge: true });
+    const { id: _ignore, ...fields } = updates as Partial<Teacher> & { id?: string };
+    await adminUpdateTeacher(id, fields);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `teachers/${id}`);
   }
@@ -97,7 +98,7 @@ export async function updateTeacher(id: string, updates: Partial<Teacher>) {
 
 export async function deleteTeacher(id: string) {
   try {
-    await deleteDoc(doc(db, 'teachers', id));
+    await adminDeleteTeacher(id);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `teachers/${id}`);
   }
