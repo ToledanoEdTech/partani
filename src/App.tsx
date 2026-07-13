@@ -634,10 +634,10 @@ const App = () => {
   const emailRemindersCfg: EmailReminderSettings = settings.emailReminders || {};
   const remindersEnabled = emailRemindersCfg.enabled !== false; // default true
   const remindersMinMissing = Math.max(
-    2,
+    1,
     Number.isFinite(Number(emailRemindersCfg.minMissingLessons))
       ? Number(emailRemindersCfg.minMissingLessons)
-      : 2
+      : 1
   );
 
   const scheduleSubjectOptions = useMemo(
@@ -686,7 +686,7 @@ const App = () => {
   };
 
   const handleUpdateRemindersMin = async (value: number) => {
-    const sanitized = Math.max(2, Math.round(value || 2));
+    const sanitized = Math.max(1, Math.round(value || 1));
     await updateSettings({
       emailReminders: { ...emailRemindersCfg, minMissingLessons: sanitized },
     });
@@ -1774,17 +1774,17 @@ const App = () => {
                     <div className="bg-gray-50 border border-gray-200 p-5 rounded-lg space-y-3">
                       <label className="block text-sm font-bold text-gray-800">סף מינימלי לשליחת תזכורת</label>
                       <p className="text-xs text-gray-500">
-                        מספר השיעורים שלא דווחו השבוע שמהם והלאה תישלח תזכורת. מינימום 2.
+                        מספר השיעורים שלא דווחו השבוע שמהם והלאה תישלח תזכורת. מינימום 1.
                       </p>
                       <div className="flex items-center gap-3">
                         <input
                           type="number"
-                          min={2}
+                          min={1}
                           max={20}
                           value={remindersMinMissing}
                           onChange={(e) => {
                             const v = Number(e.target.value);
-                            if (Number.isFinite(v) && v >= 2 && v !== remindersMinMissing) {
+                            if (Number.isFinite(v) && v >= 1 && v !== remindersMinMissing) {
                               void handleUpdateRemindersMin(v);
                             }
                           }}

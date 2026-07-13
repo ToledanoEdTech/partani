@@ -37,7 +37,7 @@ import {
 } from '../../src/lib/lesson-stats.js';
 import type { EmailReminderSettings, Report, Schedule, Teacher } from '../../src/types.js';
 
-const DEFAULT_MIN_MISSING = 2;
+const DEFAULT_MIN_MISSING = 1;
 
 type SkipReason =
   | 'inactive'
@@ -110,7 +110,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
   const globalEnabled = reminderCfg.enabled !== false; // default true
   const minMissing = Math.max(
-    2,
+    1,
     Number.isFinite(Number(reminderCfg.minMissingLessons))
       ? Number(reminderCfg.minMissingLessons)
       : DEFAULT_MIN_MISSING
