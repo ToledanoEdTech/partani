@@ -26,7 +26,7 @@ import {
   addTeacher, updateTeacher, deleteTeacher, addSchedule, deleteSchedule, updateSchedule, addReport, deleteReport,
   addStudent, updateStudent, deleteStudent
 } from './lib/db';
-import { Teacher, Schedule, Report, EmailReminderSettings, Student, LessonType } from './types';
+import { Teacher, Schedule, Report, EmailReminderSettings, Student, LessonType, AppSettings } from './types';
 import StudentPicker from './components/StudentPicker';
 import StudentCard from './components/StudentCard';
 import {
@@ -38,6 +38,11 @@ import {
   getStudentLessonDetails,
   getUniqueClassNames,
 } from './lib/students';
+import {
+  DEFAULT_SCHEDULE_SUBJECTS,
+  SCHEDULE_HOUR_OPTIONS,
+  mergeScheduleSubjects,
+} from './lib/schedule-options';
 import { AppLogos } from './components/AppLogos';
 import { SITE_TITLE } from './lib/branding';
 import * as XLSX from 'xlsx';
@@ -178,9 +183,9 @@ const App = () => {
   const [students, setStudents] = useState<Student[]>([]);
   const [schedule, setSchedule] = useState<Schedule[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
-  const [settings, setSettings] = useState<{
-    emailReminders?: EmailReminderSettings;
-  }>({});
+  const [settings, setSettings] = useState<AppSettings>({});
+  const [newCustomSubject, setNewCustomSubject] = useState('');
+  const [showAddSubjectInput, setShowAddSubjectInput] = useState(false);
   
   // UI State — מצב ניווט נשמר ב-sessionStorage כדי לשרוד רענון דף
   // (Vite HMR / רענון ידני / שגיאת רשת) במקום לאפס את המשתמש לעמוד הראשי.
@@ -218,8 +223,8 @@ const App = () => {
   
   const [newScheduleTeacher, setNewScheduleTeacher] = useState('');
   const [newScheduleDay, setNewScheduleDay] = useState('ראשון');
-  const [newScheduleHour, setNewScheduleHour] = useState('');
-  const [newScheduleSubject, setNewScheduleSubject] = useState('');
+  const [newScheduleHour, setNewScheduleHour] = useState('0');
+  const [newScheduleSubject, setNewScheduleSubject] = useState(DEFAULT_SCHEDULE_SUBJECTS[0]);
   const [newScheduleLessonType, setNewScheduleLessonType] = useState<LessonType>('fixed');
   const [newScheduleStudentIds, setNewScheduleStudentIds] = useState<string[]>([]);
 
@@ -524,8 +529,8 @@ const App = () => {
 
   const handleDownloadSchedulesTemplate = () => {
     const ws = XLSX.utils.json_to_sheet([
-      { 'אימייל מורה': 'israel@example.com', 'יום': 'ראשון', 'שעה': '9:00', 'סוג': 'קבוע', 'תלמידים': 'אברהם פריד, יעקב כהן', 'מקצוע': 'מתמטיקה' },
-      { 'אימייל מורה': 'moshe@example.com', 'יום': 'שני', 'שעה': '10:00', 'סוג': 'גמיש', 'תלמידים': '', 'מקצוע': 'אנגלית' }
+      { 'אימייל מורה': 'israel@example.com', 'יום': 'ראשון', 'שעה': '2', 'סוג': 'קבוע', 'תלמידים': 'אברהם פריד, יעקב כהן', 'מקצוע': 'מתמטיקה' },
+      { 'אימייל מורה': 'moshe@example.com', 'יום': 'שני', 'שעה': '5', 'סוג': 'גמיש', 'תלמידים': '', 'מקצוע': 'אנגלית' }
     ]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'שיעורים');
@@ -634,6 +639,39 @@ const App = () => {
       ? Number(emailRemindersCfg.minMissingLessons)
       : 2
   );
+
+  const scheduleSubjectOptions = useMemo(
+    () => mergeScheduleSubjects(settings.scheduleSubjects),
+    [settings.scheduleSubjects],
+  );
+
+  const handleAddCustomSubject = async () => {
+    const name = newCustomSubject.trim();
+    if (!name) {
+      triggerNotification('נא להזין שם מקצוע', 'error');
+      return;
+    }
+    if (scheduleSubjectOptions.includes(name)) {
+      triggerNotification('המקצוע כבר קיים ברשימה', 'error');
+      return;
+    }
+    const next = [...(settings.scheduleSubjects || []), name];
+    await updateSettings({ scheduleSubjects: next });
+    setNewScheduleSubject(name);
+    setNewCustomSubject('');
+    setShowAddSubjectInput(false);
+    triggerNotification(`המקצוע "${name}" נוסף לרשימה`);
+  };
+
+  const handleRemoveCustomSubject = async (name: string) => {
+    if ((DEFAULT_SCHEDULE_SUBJECTS as readonly string[]).includes(name)) return;
+    const next = (settings.scheduleSubjects || []).filter((s) => s !== name);
+    await updateSettings({ scheduleSubjects: next });
+    if (newScheduleSubject === name) {
+      setNewScheduleSubject(DEFAULT_SCHEDULE_SUBJECTS[0]);
+    }
+    triggerNotification(`המקצוע "${name}" הוסר מהרשימה`);
+  };
 
   const handleToggleRemindersEnabled = async () => {
     const next = !remindersEnabled;
@@ -754,9 +792,9 @@ const App = () => {
       studentIds: newScheduleLessonType === 'fixed' ? newScheduleStudentIds : [],
       studentName: buildStudentNameField(newScheduleLessonType, newScheduleStudentIds, students),
     });
-    setNewScheduleHour('');
+    setNewScheduleHour('0');
     setNewScheduleStudentIds([]);
-    setNewScheduleSubject('');
+    setNewScheduleSubject(DEFAULT_SCHEDULE_SUBJECTS[0]);
     setShowAddScheduleModal(false);
     triggerNotification('שעת שיעור פרטני נוספה בהצלחה למערכת');
   };
@@ -2130,8 +2168,56 @@ const App = () => {
                                 {['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי'].map(d => <option key={d}>{d}</option>)}
                               </select>
                            </div>
-                           <div><label className="text-xs font-bold mb-1 block">שעות:</label><input type="text" value={newScheduleHour} onChange={e => setNewScheduleHour(e.target.value)} required className="w-full p-2 border rounded-lg"/></div>
-                           <div><label className="text-xs font-bold mb-1 block">מקצוע:</label><input type="text" value={newScheduleSubject} onChange={e => setNewScheduleSubject(e.target.value)} required className="w-full p-2 border rounded-lg"/></div>
+                           <div>
+                              <label className="text-xs font-bold mb-1 block">שעה (משבצת):</label>
+                              <select value={newScheduleHour} onChange={e => setNewScheduleHour(e.target.value)} required className="w-full p-2 border rounded-lg bg-white">
+                                {SCHEDULE_HOUR_OPTIONS.map(h => <option key={h} value={h}>{h}</option>)}
+                              </select>
+                           </div>
+                           <div>
+                              <label className="text-xs font-bold mb-1 block">מקצוע:</label>
+                              <select value={newScheduleSubject} onChange={e => setNewScheduleSubject(e.target.value)} required className="w-full p-2 border rounded-lg bg-white">
+                                {scheduleSubjectOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                              </select>
+                           </div>
+                         </div>
+                         <div className="flex flex-wrap items-end gap-2">
+                           {!showAddSubjectInput ? (
+                             <button
+                               type="button"
+                               onClick={() => setShowAddSubjectInput(true)}
+                               className="text-sm font-bold text-blue-700 hover:text-blue-900 underline-offset-2 hover:underline"
+                             >
+                               + הוסף מקצוע לרשימה
+                             </button>
+                           ) : (
+                             <>
+                               <div className="flex-1 min-w-[180px] max-w-xs">
+                                 <label className="text-xs font-bold mb-1 block">מקצוע חדש:</label>
+                                 <input
+                                   type="text"
+                                   value={newCustomSubject}
+                                   onChange={e => setNewCustomSubject(e.target.value)}
+                                   placeholder="לדוגמה: תנ״ך"
+                                   className="w-full p-2 border rounded-lg bg-white"
+                                 />
+                               </div>
+                               <button type="button" onClick={() => void handleAddCustomSubject()} className="press py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-sm">הוסף</button>
+                               <button type="button" onClick={() => { setShowAddSubjectInput(false); setNewCustomSubject(''); }} className="press py-2 px-4 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold rounded-lg text-sm">ביטול</button>
+                             </>
+                           )}
+                           {(settings.scheduleSubjects || []).length > 0 && (
+                             <div className="w-full flex flex-wrap gap-2 pt-1">
+                               {(settings.scheduleSubjects || []).map(s => (
+                                 <span key={s} className="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded-full px-3 py-1 text-xs font-bold text-gray-700">
+                                   {s}
+                                   <button type="button" onClick={() => void handleRemoveCustomSubject(s)} className="text-red-500 hover:text-red-700" title="הסר מהרשימה" aria-label={`הסר ${s}`}>
+                                     <X className="w-3.5 h-3.5" />
+                                   </button>
+                                 </span>
+                               ))}
+                             </div>
+                           )}
                          </div>
                          <div>
                            <label className="text-xs font-bold mb-2 block">סוג שיעור:</label>
@@ -2299,8 +2385,8 @@ const App = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(hourNum => {
-                        const hourStr = hourNum.toString();
+                      {SCHEDULE_HOUR_OPTIONS.map(hourNum => {
+                        const hourStr = hourNum;
                         return (
                           <tr key={hourStr}>
                             <td className="border p-2 font-bold text-center bg-gray-50">{hourStr}</td>
@@ -2910,7 +2996,19 @@ const App = () => {
               )}
               <div>
                 <label className="text-sm font-bold mb-1 block">מקצוע הנלמד:</label>
-                <input type="text" value={scheduleToEdit.subject} onChange={e => setScheduleToEdit({...scheduleToEdit, subject: e.target.value})} required className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"/>
+                <select
+                  value={scheduleToEdit.subject}
+                  onChange={e => setScheduleToEdit({...scheduleToEdit, subject: e.target.value})}
+                  required
+                  className="w-full p-2 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                >
+                  {!scheduleSubjectOptions.includes(scheduleToEdit.subject) && scheduleToEdit.subject && (
+                    <option value={scheduleToEdit.subject}>{scheduleToEdit.subject} (קיים)</option>
+                  )}
+                  {scheduleSubjectOptions.map(s => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -2923,8 +3021,20 @@ const App = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="text-sm font-bold mb-1 block">שעות (לדוגמה: משבצת 2 או 14:00):</label>
-                  <input type="text" value={scheduleToEdit.hour} onChange={e => setScheduleToEdit({...scheduleToEdit, hour: e.target.value})} required className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"/>
+                  <label className="text-sm font-bold mb-1 block">שעה (משבצת 0–10):</label>
+                  <select
+                    value={scheduleToEdit.hour}
+                    onChange={e => setScheduleToEdit({...scheduleToEdit, hour: e.target.value})}
+                    required
+                    className="w-full p-2 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  >
+                    {!(SCHEDULE_HOUR_OPTIONS as readonly string[]).includes(scheduleToEdit.hour) && scheduleToEdit.hour && (
+                      <option value={scheduleToEdit.hour}>{scheduleToEdit.hour} (קיים)</option>
+                    )}
+                    {SCHEDULE_HOUR_OPTIONS.map(h => (
+                      <option key={h} value={h}>{h}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
               <div className="flex justify-end gap-3 pt-4 border-t">

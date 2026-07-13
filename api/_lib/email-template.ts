@@ -27,6 +27,29 @@ function formatDateForDisplay(yyyymmdd: string): string {
   return `${d}/${m}/${y}`;
 }
 
+/**
+ * Stacked lesson cards (not a wide multi-column table) so the email stays
+ * readable on narrow phone screens without horizontal clipping.
+ */
+function renderLessonCard(m: MissingLesson): string {
+  return `
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="width:100%;max-width:100%;border-collapse:collapse;margin:0 0 10px 0">
+                <tr>
+                  <td style="padding:12px 14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;text-align:right;word-break:break-word;overflow-wrap:anywhere">
+                    <div style="font-size:15px;font-weight:bold;color:#111827;margin:0 0 6px 0;line-height:1.4">${escapeHtml(m.studentName)}</div>
+                    <div style="font-size:13px;color:#4b5563;line-height:1.55">
+                      <span style="color:#6b7280">מקצוע:</span> ${escapeHtml(m.subject)}
+                    </div>
+                    <div style="font-size:13px;color:#4b5563;line-height:1.55">
+                      <span style="color:#6b7280">יום:</span> ${escapeHtml(m.day)}
+                      &nbsp;·&nbsp;
+                      <span style="color:#6b7280">תאריך:</span> ${escapeHtml(formatDateForDisplay(m.date))}
+                    </div>
+                  </td>
+                </tr>
+              </table>`;
+}
+
 export function renderReminderEmail({
   teacherName,
   missingLessons,
@@ -35,17 +58,7 @@ export function renderReminderEmail({
 }: RenderArgs): { html: string; text: string } {
   const top = missingLessons.slice(0, 5);
 
-  const rowsHtml = top
-    .map(
-      (m) => `
-            <tr>
-              <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:bold">${escapeHtml(m.studentName)}</td>
-              <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;color:#4b5563">${escapeHtml(m.subject)}</td>
-              <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;color:#4b5563">יום ${escapeHtml(m.day)}</td>
-              <td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;color:#4b5563;font-family:'Courier New',monospace;font-size:13px">${escapeHtml(formatDateForDisplay(m.date))}</td>
-            </tr>`
-    )
-    .join('');
+  const lessonsHtml = top.map(renderLessonCard).join('');
 
   const moreNote =
     totalMissing > top.length
@@ -57,21 +70,25 @@ export function renderReminderEmail({
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="x-apple-disable-message-reformatting">
     <title>תזכורת דיווח שיעורים</title>
   </head>
-  <body style="margin:0;padding:0;background:#f3f4f6;font-family:'Segoe UI',Arial,Helvetica,sans-serif;color:#111827;direction:rtl;text-align:right">
-    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background:#f3f4f6;padding:24px 12px">
-      <tr><td align="center">
-        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="600" style="max-width:600px;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+  <body style="margin:0;padding:0;background:#f3f4f6;font-family:'Segoe UI',Arial,Helvetica,sans-serif;color:#111827;direction:rtl;text-align:right;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%">
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="width:100%;background:#f3f4f6;padding:16px 8px">
+      <tr><td align="center" style="padding:0">
+        <!--[if mso]>
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="600"><tr><td>
+        <![endif]-->
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="width:100%;max-width:600px;background:#ffffff;border-radius:12px;border:1px solid #e5e7eb">
           <tr>
-            <td style="background:#1e293b;color:#ffffff;padding:20px 24px;text-align:right">
-              <div style="font-size:11px;color:#fbbf24;font-weight:bold;letter-spacing:.5px;text-transform:uppercase">ישיבת צביה אלישיב לוד</div>
-              <div style="font-size:18px;font-weight:bold;margin-top:6px">תזכורת דיווח שיעורים פרטניים</div>
+            <td style="background:#1e293b;color:#ffffff;padding:16px 18px;text-align:right">
+              <div style="font-size:11px;color:#fbbf24;font-weight:bold;letter-spacing:.5px">ישיבת צביה אלישיב לוד</div>
+              <div style="font-size:17px;font-weight:bold;margin-top:6px;line-height:1.35">תזכורת דיווח שיעורים פרטניים</div>
             </td>
           </tr>
           <tr>
-            <td style="padding:24px;text-align:right;line-height:1.65">
-              <p style="margin:0 0 16px 0;font-size:16px">שלום ${escapeHtml(teacherName)},</p>
+            <td style="padding:18px 16px;text-align:right;line-height:1.65">
+              <p style="margin:0 0 14px 0;font-size:16px">שלום ${escapeHtml(teacherName)},</p>
 
               <p style="margin:0 0 16px 0;font-size:15px;color:#374151">
                 במסגרת המעקב השבועי אחר דיווחי השיעורים, איתרנו שטרם דיווחת על
@@ -80,33 +97,25 @@ export function renderReminderEmail({
                 אנא היכנס למערכת ועדכן את הסטטוס שלהם.
               </p>
 
-              <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="border-collapse:collapse;margin:8px 0 16px 0;font-size:14px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
-                <thead>
-                  <tr style="background:#f9fafb">
-                    <th style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;color:#6b7280;font-size:11px;font-weight:bold;text-transform:uppercase">תלמיד</th>
-                    <th style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;color:#6b7280;font-size:11px;font-weight:bold;text-transform:uppercase">מקצוע</th>
-                    <th style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;color:#6b7280;font-size:11px;font-weight:bold;text-transform:uppercase">יום</th>
-                    <th style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:right;color:#6b7280;font-size:11px;font-weight:bold;text-transform:uppercase">תאריך</th>
-                  </tr>
-                </thead>
-                <tbody>${rowsHtml}
-                </tbody>
-              </table>
+              ${lessonsHtml}
               ${moreNote}
 
-              <div style="text-align:center;margin:24px 0 8px 0">
-                <a href="${escapeHtml(appUrl)}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;font-weight:bold;padding:12px 28px;border-radius:8px;font-size:15px">
+              <div style="text-align:center;margin:22px 0 8px 0">
+                <a href="${escapeHtml(appUrl)}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;font-weight:bold;padding:12px 24px;border-radius:8px;font-size:15px;max-width:100%;box-sizing:border-box">
                   לדיווח באתר ←
                 </a>
               </div>
 
-              <p style="margin:24px 0 0 0;font-size:12px;color:#9ca3af;border-top:1px solid #e5e7eb;padding-top:12px">
+              <p style="margin:22px 0 0 0;font-size:12px;color:#9ca3af;border-top:1px solid #e5e7eb;padding-top:12px">
                 הודעה אוטומטית ממערכת הדיווחים של ישיבת צביה אלישיב לוד.<br>
                 אם דיווחת בינתיים — אין צורך בפעולה נוספת.
               </p>
             </td>
           </tr>
         </table>
+        <!--[if mso]>
+        </td></tr></table>
+        <![endif]-->
       </td></tr>
     </table>
   </body>
