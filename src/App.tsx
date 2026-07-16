@@ -3,7 +3,7 @@ import {
   BookOpen, Users, Calendar, CheckCircle, XCircle, Plus, Trash2, Edit3,
   Clock, TrendingUp, TrendingDown, LogOut,
   FileText, AlertCircle, Menu, X, Lock, Download, Upload, Settings, ClipboardCheck, GraduationCap,
-  ChevronUp, ChevronDown, Send, Mail, Loader2,
+  ChevronUp, ChevronDown, Send, Mail, Loader2, Shield, ArrowUpCircle,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
@@ -23,10 +23,11 @@ import { signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, User 
 import { auth } from './firebase';
 import {
   subscribeToTeachers, subscribeToSchedules, subscribeToReports, subscribeToSettings, subscribeToStudents, updateSettings,
-  addTeacher, updateTeacher, deleteTeacher, addSchedule, deleteSchedule, updateSchedule, addReport, deleteReport,
-  addStudent, updateStudent, deleteStudent
+  addTeacher, updateTeacher, deleteTeacher, addSchedule, deleteSchedule, updateSchedule, addReport, updateReport, deleteReport,
+  addStudent, updateStudent, deleteStudent,
+  subscribeToAdminMembership, subscribeToAdmins, addAdmin, deleteAdmin, batchUpdateStudents,
 } from './lib/db';
-import { Teacher, Schedule, Report, EmailReminderSettings, Student, LessonType, AppSettings } from './types';
+import { Teacher, Schedule, Report, EmailReminderSettings, Student, LessonType, AppSettings, AdminUser } from './types';
 import StudentPicker from './components/StudentPicker';
 import StudentCard from './components/StudentCard';
 import {
@@ -44,7 +45,12 @@ import {
   mergeScheduleSubjects,
 } from './lib/schedule-options';
 import { AppLogos } from './components/AppLogos';
-import { SITE_TITLE } from './lib/branding';
+import { SITE_TITLE, PRIMARY_ADMIN_EMAIL } from './lib/branding';
+import {
+  buildStudentPromotionPlan,
+  summarizePromotionPlan,
+  type StudentPromotionPlan,
+} from './lib/grade-promotion';
 import * as XLSX from 'xlsx';
 import {
   ISRAEL_TIMEZONE,
@@ -57,12 +63,19 @@ import {
 import {
   findReportForLessonDate,
   findReportForScheduleWeek,
+  getLessonDateForScheduleInWeek,
   isLessonDateForSchedule,
   resolveLessonDateForSave,
 } from './lib/report-matching';
 import { usePersistedState } from './lib/usePersistedState';
 import { getFirestoreUserMessage } from './lib/firestore-errors';
 import { sendRemindersNow, sendTestReminderEmail } from './lib/admin-email-api';
+import { ADMIN_NAV_ITEMS, getAdminTabLabel } from './lib/admin-nav';
+import {
+  formatHebrewDateShort,
+  formatHourSlot,
+  formatWeekRangeLabel,
+} from './lib/date-format';
 import Drawer from './components/Drawer';
 import Modal from './components/Modal';
 import TeacherDashboard from './components/TeacherDashboard';
@@ -76,8 +89,8 @@ import {
   toastVariants,
 } from './components/motion';
 
-// Admin email from requirements
-const ADMIN_EMAIL = 'yossitole@gmail.com';
+// Primary admin email (super-admin). Additional admins live in Firestore `admins/{email}`.
+const ADMIN_EMAIL = PRIMARY_ADMIN_EMAIL;
 
 const weekAnchorDate = (dateStr: string) => new Date(`${dateStr}T12:00:00`);
 
@@ -93,6 +106,15 @@ const App = () => {
   const [settings, setSettings] = useState<AppSettings>({});
   const [newCustomSubject, setNewCustomSubject] = useState('');
   const [showAddSubjectInput, setShowAddSubjectInput] = useState(false);
+  const [isListedAdmin, setIsListedAdmin] = useState(false);
+  const [adminCheckDone, setAdminCheckDone] = useState(false);
+  const [adminsList, setAdminsList] = useState<AdminUser[]>([]);
+  const [newAdminEmail, setNewAdminEmail] = useState('');
+  const [newAdminName, setNewAdminName] = useState('');
+  const [adminFormBusy, setAdminFormBusy] = useState(false);
+  const [promotionPlan, setPromotionPlan] = useState<StudentPromotionPlan[] | null>(null);
+  const [promotionBusy, setPromotionBusy] = useState(false);
+  const [promotionConfirmText, setPromotionConfirmText] = useState('');
   
   // UI State — מצב ניווט נשמר ב-sessionStorage כדי לשרוד רענון דף
   // (Vite HMR / רענון ידני / שגיאת רשת) במקום לאפס את המשתמש לעמוד הראשי.
@@ -110,6 +132,13 @@ const App = () => {
   const [filterTeacher, setFilterTeacher] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
   const [searchStudent, setSearchStudent] = useState('');
+  const [filterReportDateFrom, setFilterReportDateFrom] = useState('');
+  const [filterReportDateTo, setFilterReportDateTo] = useState('');
+  const [searchTeacher, setSearchTeacher] = useState('');
+  const [filterTeacherActive, setFilterTeacherActive] = useState<'all' | 'active' | 'inactive'>('all');
+  const [filterScheduleTeacher, setFilterScheduleTeacher] = useState('all');
+  const [filterScheduleDay, setFilterScheduleDay] = useState('all');
+  const [searchSchedule, setSearchSchedule] = useState('');
 
   // Modals state
   const [showAddTeacherModal, setShowAddTeacherModal] = useState(false);
@@ -144,10 +173,12 @@ const App = () => {
 
   // Report state (admin report modal)
   const [adminReportingSchedule, setAdminReportingSchedule] = useState<Schedule | null>(null);
+  const [editingAdminReport, setEditingAdminReport] = useState<Report | null>(null);
   const [reportStatus, setReportStatus] = useState<'completed' | 'missed'>('completed');
   const [reportText, setReportText] = useState('');
   const [reportDate, setReportDate] = useState('');
   const [reportAttendedIds, setReportAttendedIds] = useState<string[]>([]);
+  const [adminReportSubmitting, setAdminReportSubmitting] = useState(false);
 
   const [impersonateTeacherId, setImpersonateTeacherId] = usePersistedState<string | null>(
     'partani:impersonateTeacherId',
@@ -155,7 +186,8 @@ const App = () => {
   );
 
   // Derived state
-  const isAdmin = user?.email === ADMIN_EMAIL;
+  const isPrimaryAdmin = (user?.email || '').trim().toLowerCase() === ADMIN_EMAIL.toLowerCase();
+  const isAdmin = isPrimaryAdmin || isListedAdmin;
   const isImpersonating = isAdmin && impersonateTeacherId !== null;
   
   // Find current teacher profile if logged in as teacher (but not admin)
@@ -181,17 +213,45 @@ const App = () => {
       setUser(u);
       setAuthLoading(false);
       if (u) {
-        if (u.email === ADMIN_EMAIL) {
-          setRole('admin');
-        } else {
-          setRole('teacher');
-        }
+        setRole('teacher'); // refined when isAdmin becomes known
       } else {
         setRole('landing');
+        setIsListedAdmin(false);
       }
     });
     return unsub;
   }, []);
+
+  // Admin membership (Firestore admins/{email})
+  useEffect(() => {
+    if (!user?.email) {
+      setIsListedAdmin(false);
+      setAdminCheckDone(true);
+      return;
+    }
+    setAdminCheckDone(false);
+    return subscribeToAdminMembership(user.email, (member) => {
+      setIsListedAdmin(member);
+      setAdminCheckDone(true);
+    });
+  }, [user?.email]);
+
+  useEffect(() => {
+    if (user && isAdmin) setRole('admin');
+    else if (user) setRole('teacher');
+  }, [user, isAdmin]);
+
+  // Admins list (settings UI) — only when admin
+  useEffect(() => {
+    if (!user || !isAdmin || isImpersonating) {
+      setAdminsList([]);
+      return;
+    }
+    return subscribeToAdmins(
+      (list) => setAdminsList(list),
+      () => triggerNotification('שגיאה בטעינת רשימת מנהלים', 'error'),
+    );
+  }, [user, isAdmin, isImpersonating]);
 
   // Data Subscription Effect
   useEffect(() => {
@@ -808,6 +868,85 @@ const App = () => {
     }
   };
 
+  const handlePreviewGradePromotion = () => {
+    const plan = buildStudentPromotionPlan(students, { onlyActive: true });
+    setPromotionPlan(plan);
+    setPromotionConfirmText('');
+  };
+
+  const handleApplyGradePromotion = async () => {
+    if (!promotionPlan || promotionBusy) return;
+    const summary = summarizePromotionPlan(promotionPlan);
+    if (summary.actionable === 0) {
+      triggerNotification('אין תלמידים לעדכון', 'error');
+      return;
+    }
+    if (promotionConfirmText.trim() !== 'העלה כיתות') {
+      triggerNotification('יש להקליד בדיוק: העלה כיתות', 'error');
+      return;
+    }
+    const updates = promotionPlan
+      .filter((p) => p.updates)
+      .map((p) => ({ id: p.id, data: p.updates! }));
+    setPromotionBusy(true);
+    try {
+      await batchUpdateStudents(updates);
+      triggerNotification(
+        `עודכנו ${summary.promoted} תלמידים · ${summary.graduated} סומנו כבוגרים` +
+          (summary.unchanged ? ` · ${summary.unchanged} ללא שינוי` : ''),
+      );
+      setPromotionPlan(null);
+      setPromotionConfirmText('');
+    } catch (err) {
+      triggerNotification(getFirestoreUserMessage(err, 'שגיאה בהעלאת כיתות'), 'error');
+    } finally {
+      setPromotionBusy(false);
+    }
+  };
+
+  const handleAddAdminSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (adminFormBusy) return;
+    const email = newAdminEmail.trim().toLowerCase();
+    if (!email || !email.includes('@')) {
+      triggerNotification('נא להזין אימייל תקין', 'error');
+      return;
+    }
+    if (email === ADMIN_EMAIL.toLowerCase()) {
+      triggerNotification('מנהל־העל כבר מוגדר במערכת', 'error');
+      return;
+    }
+    setAdminFormBusy(true);
+    try {
+      await addAdmin(email, newAdminName.trim() || email);
+      setNewAdminEmail('');
+      setNewAdminName('');
+      triggerNotification('הרשאת מנהל נוספה בהצלחה');
+    } catch (err) {
+      triggerNotification(getFirestoreUserMessage(err, 'שגיאה בהוספת מנהל'), 'error');
+    } finally {
+      setAdminFormBusy(false);
+    }
+  };
+
+  const handleRemoveAdmin = async (email: string) => {
+    if (adminFormBusy) return;
+    if (email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+      triggerNotification('לא ניתן להסיר את מנהל־העל', 'error');
+      return;
+    }
+    if (!window.confirm(`להסיר הרשאת מנהל מ־${email}?`)) return;
+    setAdminFormBusy(true);
+    try {
+      await deleteAdmin(email);
+      triggerNotification('הרשאת המנהל הוסרה');
+    } catch (err) {
+      triggerNotification(getFirestoreUserMessage(err, 'שגיאה בהסרת מנהל'), 'error');
+    } finally {
+      setAdminFormBusy(false);
+    }
+  };
+
   const handleEditStudentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!studentToEdit || !studentToEdit.name.trim() || !studentToEdit.className.trim()) return;
@@ -884,9 +1023,9 @@ const App = () => {
 
   const handleAdminSubmitReport = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!adminReportingSchedule) return;
-    if (!reportText.trim()) {
-      triggerNotification('נא להזין משפט קצר', 'error');
+    if (!adminReportingSchedule || adminReportSubmitting) return;
+    if (reportStatus === 'missed' && !reportText.trim()) {
+      triggerNotification('נא לציין סיבת ביטול', 'error');
       return;
     }
     if (!validateAttendance(adminReportingSchedule)) return;
@@ -897,28 +1036,86 @@ const App = () => {
       return;
     }
     const lessonDate = resolved.lessonDate;
-    
-    if (findReportForLessonDate(reports, adminReportingSchedule, lessonDate)) {
-      triggerNotification('כבר קיים דיווח לשיעור זה בתאריך השיעור.', 'error');
-      return;
-    }
+    const textToSave =
+      reportText.trim() ||
+      (reportStatus === 'completed' ? 'השיעור התקיים' : '');
 
-    await addReport({
+    const payload = {
       scheduleId: adminReportingSchedule.id,
       teacherId: adminReportingSchedule.teacherId,
       teacherEmail: adminReportingSchedule.teacherEmail,
       date: lessonDate,
       status: reportStatus,
-      text: reportText,
+      text: textToSave,
       timestamp: new Date().toISOString(),
-      ...(reportStatus === 'completed' ? { attendedStudentIds: reportAttendedIds } : {}),
-    });
-    
-    triggerNotification('דיווח הוסף בהצלחה במערכת!');
-    setReportText('');
-    setReportAttendedIds([]);
+      ...(reportStatus === 'completed'
+        ? { attendedStudentIds: reportAttendedIds }
+        : { attendedStudentIds: [] as string[] }),
+    };
+
+    setAdminReportSubmitting(true);
+    try {
+      if (editingAdminReport) {
+        await updateReport(editingAdminReport.id, payload);
+        triggerNotification('הדיווח עודכן בהצלחה');
+      } else {
+        const existing = findReportForLessonDate(reports, adminReportingSchedule, lessonDate);
+        if (existing) {
+          triggerNotification('כבר קיים דיווח לשיעור זה בתאריך השיעור. ניתן לערוך אותו מרשימת הדיווחים.', 'error');
+          return;
+        }
+        await addReport(payload);
+        triggerNotification('דיווח הוסף בהצלחה במערכת!');
+      }
+      setReportText('');
+      setReportAttendedIds([]);
+      setEditingAdminReport(null);
+      setShowAdminReportModal(false);
+      setAdminReportingSchedule(null);
+    } catch (err) {
+      triggerNotification(getFirestoreUserMessage(err, 'שגיאה בשמירת הדיווח'), 'error');
+    } finally {
+      setAdminReportSubmitting(false);
+    }
+  };
+
+  const closeAdminReportModal = () => {
     setShowAdminReportModal(false);
     setAdminReportingSchedule(null);
+    setEditingAdminReport(null);
+    setReportAttendedIds([]);
+    setReportText('');
+  };
+
+  const openAdminReport = (sched: Schedule, dateStr: string, existing?: Report) => {
+    setAdminReportingSchedule(sched);
+    setEditingAdminReport(existing ?? null);
+    setReportDate(existing?.date || dateStr);
+    setReportStatus(existing?.status || 'completed');
+    setReportText(existing?.text || '');
+    if (existing?.status === 'completed' && existing.attendedStudentIds?.length) {
+      setReportAttendedIds(existing.attendedStudentIds);
+    } else {
+      const expected = getExpectedStudentIdsForReport(sched);
+      const lastIds = getLastAttendedStudentIds(sched.id, reports);
+      if (sched.lessonType === 'flexible' && lastIds.length > 0) {
+        setReportAttendedIds(lastIds);
+      } else if (expected.length > 0) {
+        setReportAttendedIds(expected);
+      } else {
+        setReportAttendedIds([]);
+      }
+    }
+    setShowAdminReportModal(true);
+  };
+
+  const openAdminEditReport = (rep: Report) => {
+    const sched = schedule.find((s) => s.id === rep.scheduleId);
+    if (!sched) {
+      triggerNotification('לא נמצא השיעור המשויך לדיווח זה', 'error');
+      return;
+    }
+    openAdminReport(sched, rep.date, rep);
   };
 
   const totalClassesPlanned = schedule.length;
@@ -1177,6 +1374,8 @@ const App = () => {
     
     const matchesTeacher = filterTeacher === 'all' || report.teacherId === filterTeacher;
     const matchesStatus = filterStatus === 'all' || report.status === filterStatus;
+    const matchesDateFrom = !filterReportDateFrom || report.date >= filterReportDateFrom;
+    const matchesDateTo = !filterReportDateTo || report.date <= filterReportDateTo;
     
     const searchLower = searchStudent.toLowerCase();
     const attendedLabel = getReportAttendedLabel(report, scheduleItem, students);
@@ -1187,8 +1386,61 @@ const App = () => {
       (teacherItem && teacherItem.name.toLowerCase().includes(searchLower)) ||
       (scheduleItem && scheduleItem.subject.toLowerCase().includes(searchLower));
 
-    return matchesTeacher && matchesStatus && matchesSearch;
+    return matchesTeacher && matchesStatus && matchesSearch && matchesDateFrom && matchesDateTo;
   });
+
+  const filteredTeachersList = useMemo(() => {
+    const q = searchTeacher.trim().toLowerCase();
+    return teachers.filter((t) => {
+      if (filterTeacherActive === 'active' && !t.active) return false;
+      if (filterTeacherActive === 'inactive' && t.active) return false;
+      if (!q) return true;
+      return (
+        t.name.toLowerCase().includes(q) ||
+        t.email.toLowerCase().includes(q) ||
+        t.subject.toLowerCase().includes(q)
+      );
+    });
+  }, [teachers, searchTeacher, filterTeacherActive]);
+
+  const filteredSchedulesList = useMemo(() => {
+    const q = searchSchedule.trim().toLowerCase();
+    return schedule.filter((s) => {
+      if (filterScheduleTeacher !== 'all' && s.teacherId !== filterScheduleTeacher) return false;
+      if (filterScheduleDay !== 'all' && s.day !== filterScheduleDay) return false;
+      if (!q) return true;
+      const teacher = teachers.find((t) => t.id === s.teacherId);
+      const label = getScheduleDisplayLabel(s, students).toLowerCase();
+      return (
+        label.includes(q) ||
+        s.subject.toLowerCase().includes(q) ||
+        (teacher?.name.toLowerCase().includes(q) ?? false)
+      );
+    });
+  }, [schedule, teachers, students, filterScheduleTeacher, filterScheduleDay, searchSchedule]);
+
+  const missingThisWeekCount = useMemo(() => {
+    return activeTeachers.reduce((sum, t) => {
+      return (
+        sum +
+        getMissingLessonsForTeacherThisWeek({
+          teacherId: t.id,
+          schedules: schedule,
+          reports,
+        }).length
+      );
+    }, 0);
+  }, [activeTeachers, schedule, reports]);
+
+  const adminNavIcons: Record<string, React.ReactNode> = {
+    overview: <TrendingUp className="w-4 h-4 shrink-0" />,
+    teachers: <Users className="w-4 h-4 shrink-0" />,
+    students: <GraduationCap className="w-4 h-4 shrink-0" />,
+    schedule: <Calendar className="w-4 h-4 shrink-0" />,
+    timetable: <Clock className="w-4 h-4 shrink-0" />,
+    reports: <FileText className="w-4 h-4 shrink-0" />,
+    settings: <Settings className="w-4 h-4 shrink-0" />,
+  };
 
   if (authLoading) {
     return (
@@ -1241,7 +1493,9 @@ const App = () => {
               aria-label="פתח תפריט"
               aria-expanded={mobileMenuOpen}
               aria-controls="app-side-drawer"
-              className="press p-2 text-white hover:bg-white/10 border border-transparent hover:border-gray-600 rounded-lg transition-colors bg-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 shrink-0"
+              className={`press p-2 text-white hover:bg-white/10 border border-transparent hover:border-gray-600 rounded-lg transition-colors bg-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 shrink-0 ${
+                isAdmin && !isImpersonating ? 'lg:hidden' : ''
+              }`}
               onClick={() => setMobileMenuOpen(true)}
             >
               <Menu className="w-6 h-6" />
@@ -1310,15 +1564,7 @@ const App = () => {
                 {isAdmin && !isImpersonating && (
                   <div className="space-y-1">
                     <p className="text-xs font-bold text-gray-500 mb-2 uppercase">דפי ניהול</p>
-                    {[
-                      { id: 'overview',  label: 'מבט על וסטטיסטיקה',     icon: <TrendingUp className="w-4 h-4"/> },
-                      { id: 'teachers',  label: 'ניהול מורים',            icon: <Users className="w-4 h-4"/> },
-                      { id: 'students',  label: 'מאגר תלמידים',           icon: <GraduationCap className="w-4 h-4"/> },
-                      { id: 'schedule',  label: 'מערכת שעות פרטנית',      icon: <Calendar className="w-4 h-4"/> },
-                      { id: 'timetable', label: 'מערכת שעות שבועית',      icon: <Clock className="w-4 h-4"/> },
-                      { id: 'reports',   label: 'כל הדיווחים במערכת',     icon: <FileText className="w-4 h-4"/> },
-                      { id: 'settings',  label: 'הגדרות לוגו / מערכת',    icon: <Settings className="w-4 h-4"/> },
-                    ].map(item => (
+                    {ADMIN_NAV_ITEMS.map(item => (
                       <motion.button
                         key={item.id}
                         variants={drawerItemVariants}
@@ -1327,7 +1573,7 @@ const App = () => {
                         aria-current={adminTab === item.id ? 'page' : undefined}
                         className={`press w-full text-right p-2 rounded flex items-center gap-3 transition-colors ${adminTab === item.id ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-800'}`}
                       >
-                        {item.icon} {item.label}
+                        {adminNavIcons[item.id]} {item.label}
                       </motion.button>
                     ))}
                   </div>
@@ -1383,7 +1629,7 @@ const App = () => {
         </div>
       </Drawer>
 
-      <main className="flex-1">
+      <main className="flex-1 flex flex-col min-h-0">
         {/* LANDING */}
         {!user && (
           <div className="py-12 px-4 max-w-6xl mx-auto flex items-center flex-col text-center space-y-8">
@@ -1410,8 +1656,20 @@ const App = () => {
           </div>
         )}
 
+        {/* Waiting for admin membership check */}
+        {user && !isAdmin && !isImpersonating && !currentTeacherProfile && !adminCheckDone && (
+          <div
+            className="flex flex-col items-center justify-center py-24 gap-4 text-gray-500"
+            dir="rtl"
+            role="status"
+          >
+            <div className="app-spinner" aria-hidden="true" />
+            <p className="text-sm font-bold">בודק הרשאות...</p>
+          </div>
+        )}
+
         {/* TEACHER NOT FOUND (Logged in but no teacher profile) */}
-        {user && !isAdmin && !isImpersonating && !currentTeacherProfile && (
+        {user && !isAdmin && !isImpersonating && !currentTeacherProfile && adminCheckDone && (
            <div className="py-12 px-4 max-w-2xl mx-auto text-center space-y-6">
               <div className="bg-white p-8 rounded-lg shadow border border-red-100">
                   <AlertCircle className="w-16 h-16 mx-auto text-red-500 mb-4" />
@@ -1441,13 +1699,74 @@ const App = () => {
 
         {/* ADMIN VIEW */}
         {user && isAdmin && !isImpersonating && (
-          <div className="py-6 sm:py-8 px-3 sm:px-4 max-w-6xl mx-auto space-y-6 sm:space-y-8">
-            <div className="bg-white rounded-lg p-4 sm:p-6 shadow-sm border border-gray-100">
-              <div className="min-w-0">
-                <span className="text-xs font-bold text-amber-600">מנהל ישיבת צביה אלישיב לוד</span>
-                <h2 className="text-xl sm:text-2xl font-bold text-gray-900 break-words">לוח בקרה וניהול פדגוגי</h2>
+          <div className="flex flex-1 w-full min-h-0">
+            {/* Desktop sidebar */}
+            <aside className="hidden lg:flex w-56 xl:w-60 shrink-0 flex-col bg-slate-800 text-white sticky top-[53px] h-[calc(100dvh-53px)] border-l border-slate-700/80">
+              <div className="px-4 py-4 border-b border-slate-700">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-amber-400">הנהלה</p>
+                <p className="text-sm font-bold mt-0.5 truncate">צביה אלישיב לוד</p>
               </div>
-            </div>
+              <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto" aria-label="ניווט מנהל">
+                {ADMIN_NAV_ITEMS.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setAdminTab(item.id)}
+                    aria-current={adminTab === item.id ? 'page' : undefined}
+                    className={`press w-full text-right px-3 py-2.5 rounded-lg flex items-center gap-2.5 text-sm font-bold transition-colors ${
+                      adminTab === item.id
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'text-slate-300 hover:bg-slate-700/80 hover:text-white'
+                    }`}
+                  >
+                    {adminNavIcons[item.id]}
+                    {item.label}
+                  </button>
+                ))}
+              </nav>
+              <div className="p-3 border-t border-slate-700">
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="press w-full text-right px-3 py-2 rounded-lg text-sm font-bold text-red-300 hover:bg-red-500/20 hover:text-red-200 flex items-center gap-2"
+                >
+                  <LogOut className="w-4 h-4" /> יציאה
+                </button>
+              </div>
+            </aside>
+
+            <div className="flex-1 min-w-0 py-5 sm:py-6 px-3 sm:px-5 lg:px-8 max-w-6xl w-full mx-auto space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-slate-500">לוח בקרה · ישיבת צביה אלישיב</p>
+                  <h2 className="text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">{getAdminTabLabel(adminTab)}</h2>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {missingThisWeekCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setAdminTab('timetable')}
+                      className="press px-3 py-2 rounded-xl text-xs sm:text-sm font-bold bg-amber-50 text-amber-950 border border-amber-200 hover:bg-amber-100"
+                    >
+                      {missingThisWeekCount} שיעורים חסרים השבוע
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setAdminTab('timetable')}
+                    className="press px-3 py-2 rounded-xl text-xs sm:text-sm font-bold bg-white border border-gray-200 text-gray-700 hover:bg-gray-50"
+                  >
+                    לוח שבועי
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAdminTab('schedule'); setShowAddScheduleModal(true); }}
+                    className="press px-3 py-2 rounded-xl text-xs sm:text-sm font-bold bg-blue-600 text-white hover:bg-blue-700"
+                  >
+                    + שיבוץ
+                  </button>
+                </div>
+              </div>
 
             <AnimatePresence mode="wait" initial={false}>
             {/* TAB: SETTINGS */}
@@ -1672,6 +1991,173 @@ const App = () => {
                     </div>
                   )}
                 </div>
+
+                {/* Grade promotion */}
+                <div className="bg-white rounded-xl p-4 sm:p-6 shadow-sm border border-gray-100 space-y-4">
+                  <div className="border-b pb-4">
+                    <h3 className="text-lg sm:text-xl font-bold text-gray-900 flex items-center gap-2">
+                      <ArrowUpCircle className="w-5 h-5 text-blue-600 shrink-0" />
+                      העלאת כיתות (סוף שנה)
+                    </h3>
+                    <p className="text-sm text-gray-500 mt-1">
+                      מעביר את כל התלמידים הפעילים כיתה אחת קדימה (למשל י1 → יא1, ז3 → ח3).
+                      תלמידי יב מסומנים כבוגרים ומועברים לסטטוס לא פעיל.
+                    </p>
+                  </div>
+                  {!promotionPlan ? (
+                    <button
+                      type="button"
+                      onClick={handlePreviewGradePromotion}
+                      className="press px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-sm"
+                    >
+                      הצג תצוגה מקדימה
+                    </button>
+                  ) : (
+                    <div className="space-y-4">
+                      {(() => {
+                        const summary = summarizePromotionPlan(promotionPlan);
+                        return (
+                          <div className="flex flex-wrap gap-2 text-xs font-bold">
+                            <span className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-800">{summary.promoted} יועלו כיתה</span>
+                            <span className="px-2.5 py-1 rounded-lg bg-amber-50 text-amber-900">{summary.graduated} בוגרים</span>
+                            <span className="px-2.5 py-1 rounded-lg bg-gray-100 text-gray-600">{summary.unchanged} ללא שינוי</span>
+                          </div>
+                        );
+                      })()}
+                      <div className="max-h-56 overflow-y-auto border border-gray-100 rounded-xl divide-y text-sm">
+                        {promotionPlan.slice(0, 80).map((p) => (
+                          <div key={p.id} className="px-3 py-2 flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-bold text-gray-900">{p.name}</span>
+                            <span className="text-xs text-gray-600">
+                              {p.from}
+                              {p.kind !== 'unchanged' && (
+                                <>
+                                  {' → '}
+                                  <span className={p.kind === 'graduated' ? 'text-amber-800 font-bold' : 'text-green-700 font-bold'}>
+                                    {p.to}
+                                  </span>
+                                </>
+                              )}
+                              {p.kind === 'unchanged' && p.reason && (
+                                <span className="text-red-600 mr-1">({p.reason})</span>
+                              )}
+                            </span>
+                          </div>
+                        ))}
+                        {promotionPlan.length > 80 && (
+                          <p className="px-3 py-2 text-xs text-gray-400">…ועוד {promotionPlan.length - 80}</p>
+                        )}
+                      </div>
+                      <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
+                        <p className="text-xs font-bold text-amber-950">
+                          פעולה בלתי הפיכה בקלות. להמשך הקלד <span className="font-mono">העלה כיתות</span>:
+                        </p>
+                        <input
+                          value={promotionConfirmText}
+                          onChange={(e) => setPromotionConfirmText(e.target.value)}
+                          className="w-full p-2 border border-amber-200 rounded-lg text-sm bg-white"
+                          placeholder="העלה כיתות"
+                        />
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={promotionBusy}
+                          onClick={() => void handleApplyGradePromotion()}
+                          className="press px-4 py-2.5 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-bold rounded-xl text-sm flex items-center gap-2"
+                        >
+                          {promotionBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                          בצע העלאת כיתות
+                        </button>
+                        <button
+                          type="button"
+                          disabled={promotionBusy}
+                          onClick={() => { setPromotionPlan(null); setPromotionConfirmText(''); }}
+                          className="press px-4 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold rounded-xl text-sm"
+                        >
+                          ביטול
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Admin permissions */}
+                <div className="bg-white rounded-xl p-4 sm:p-6 shadow-sm border border-gray-100 space-y-4">
+                  <div className="border-b pb-4">
+                    <h3 className="text-lg sm:text-xl font-bold text-gray-900 flex items-center gap-2">
+                      <Shield className="w-5 h-5 text-blue-600 shrink-0" />
+                      הרשאות מנהל
+                    </h3>
+                    <p className="text-sm text-gray-500 mt-1">
+                      מנהלים יכולים לערוך מורים, תלמידים, שיבוץ ודיווחים. מנהל־העל ({ADMIN_EMAIL}) תמיד פעיל ולא ניתן להסרה.
+                    </p>
+                  </div>
+
+                  <div className="border border-gray-100 rounded-xl overflow-hidden">
+                    <div className="px-3 py-2.5 bg-slate-50 border-b flex items-center justify-between gap-2">
+                      <div>
+                        <p className="font-bold text-gray-900 text-sm">מנהל־על</p>
+                        <p className="text-xs text-gray-500" dir="ltr">{ADMIN_EMAIL}</p>
+                      </div>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-amber-100 text-amber-900">קבוע</span>
+                    </div>
+                    {adminsList.length === 0 ? (
+                      <p className="px-3 py-4 text-sm text-gray-400">אין מנהלים נוספים</p>
+                    ) : (
+                      <ul className="divide-y">
+                        {adminsList.map((a) => (
+                          <li key={a.id} className="px-3 py-2.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="font-bold text-gray-900 text-sm">{a.name || a.email}</p>
+                              <p className="text-xs text-gray-500 break-all" dir="ltr">{a.email}</p>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={adminFormBusy}
+                              onClick={() => void handleRemoveAdmin(a.email)}
+                              className="press self-start px-3 py-1.5 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg flex items-center gap-1"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" /> הסר הרשאה
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                  <form onSubmit={handleAddAdminSubmit} className="grid sm:grid-cols-3 gap-3 items-end bg-gray-50 border border-gray-100 rounded-xl p-3 sm:p-4">
+                    <div>
+                      <label className="text-xs font-bold text-gray-600 block mb-1">שם מנהל</label>
+                      <input
+                        value={newAdminName}
+                        onChange={(e) => setNewAdminName(e.target.value)}
+                        className="w-full p-2 border rounded-lg text-sm bg-white"
+                        placeholder="שם להצגה"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-gray-600 block mb-1">אימייל (Google)</label>
+                      <input
+                        type="email"
+                        required
+                        value={newAdminEmail}
+                        onChange={(e) => setNewAdminEmail(e.target.value)}
+                        className="w-full p-2 border rounded-lg text-sm bg-white"
+                        placeholder="name@gmail.com"
+                        dir="ltr"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={adminFormBusy}
+                      className="press py-2.5 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2"
+                    >
+                      {adminFormBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                      הוסף מנהל
+                    </button>
+                  </form>
+                </div>
               </motion.div>
             )}
 
@@ -1698,6 +2184,24 @@ const App = () => {
                   <button onClick={handleExportTeachers} className="px-3 sm:px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded text-sm flex items-center gap-1.5 shadow-sm">
                     <Download className="w-4 h-4 shrink-0"/> ייצוא לאקסל
                   </button>
+                </div>
+
+                <div className="bg-white p-3 sm:p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col sm:flex-row gap-3">
+                  <input
+                    value={searchTeacher}
+                    onChange={(e) => setSearchTeacher(e.target.value)}
+                    placeholder="חיפוש לפי שם, אימייל או מקצוע..."
+                    className="flex-1 p-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <select
+                    value={filterTeacherActive}
+                    onChange={(e) => setFilterTeacherActive(e.target.value as 'all' | 'active' | 'inactive')}
+                    className="p-2 border border-gray-200 rounded-lg text-sm bg-white sm:w-40"
+                  >
+                    <option value="all">כל הסטטוסים</option>
+                    <option value="active">פעילים בלבד</option>
+                    <option value="inactive">לא פעילים</option>
+                  </select>
                 </div>
                 
                 <AnimatePresence initial={false}>
@@ -1738,7 +2242,7 @@ const App = () => {
                 <div className="bg-white rounded-lg border border-gray-200 shadow-sm flex-1 overflow-hidden">
                   {/* Mobile cards */}
                   <div className="md:hidden divide-y">
-                    {teachers.map(t => {
+                    {filteredTeachersList.map(t => {
                       const reminderOn = t.emailRemindersEnabled !== false;
                       return (
                         <div key={t.id} className="p-4 space-y-3">
@@ -1772,10 +2276,10 @@ const App = () => {
                                 />
                               </button>
                             </div>
-                            <div className="flex items-center gap-2">
-                              <button onClick={() => setImpersonateTeacherId(t.id)} className="press p-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded transition-colors" title="צפה כמורה זה"><BookOpen className="w-4 h-4"/></button>
-                              <button onClick={() => setTeacherToEdit(t)} className="press p-2 hover:bg-green-50 rounded transition-colors"><Edit3 className="w-4 h-4 text-green-600"/></button>
-                              <button onClick={() => handleDeleteTeacher(t.id, t.name)} className="press p-2 hover:bg-red-50 rounded transition-colors"><Trash2 className="w-4 h-4 text-red-500"/></button>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <button onClick={() => setImpersonateTeacherId(t.id)} className="press px-2.5 py-1.5 text-xs font-bold bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg transition-colors flex items-center gap-1"><BookOpen className="w-3.5 h-3.5"/> צפה כמורה</button>
+                              <button onClick={() => setTeacherToEdit(t)} className="press px-2.5 py-1.5 text-xs font-bold bg-green-50 text-green-700 hover:bg-green-100 rounded-lg transition-colors flex items-center gap-1"><Edit3 className="w-3.5 h-3.5"/> ערוך</button>
+                              <button onClick={() => handleDeleteTeacher(t.id, t.name)} className="press px-2.5 py-1.5 text-xs font-bold bg-red-50 text-red-600 hover:bg-red-100 rounded-lg transition-colors flex items-center gap-1"><Trash2 className="w-3.5 h-3.5"/> מחק</button>
                             </div>
                           </div>
                         </div>
@@ -1796,19 +2300,19 @@ const App = () => {
                         </tr>
                       </thead>
                       <tbody className="divide-y text-sm">
-                        {teachers.map(t => {
+                        {filteredTeachersList.map(t => {
                           const reminderOn = t.emailRemindersEnabled !== false;
                           return (
                           <tr key={t.id} className="transition-colors hover:bg-blue-50/40">
-                            <td className="px-6 py-4 font-bold">{t.name}</td>
-                            <td className="px-6 py-4">{t.email}</td>
-                            <td className="px-6 py-4">{t.subject}</td>
-                            <td className="px-6 py-4 text-center">
+                            <td className="px-4 py-3 font-bold">{t.name}</td>
+                            <td className="px-4 py-3 text-sm" dir="ltr">{t.email}</td>
+                            <td className="px-4 py-3">{t.subject}</td>
+                            <td className="px-4 py-3 text-center">
                               <button onClick={() => handleToggleTeacherActive(t.id, t.active)} className={`press px-3 py-1 rounded-full text-xs font-bold transition-colors ${t.active ? 'bg-green-100 text-green-800 hover:bg-green-200' : 'bg-red-100 text-red-800 hover:bg-red-200'}`}>
                                 {t.active ? 'פעיל' : 'לא פעיל'}
                               </button>
                             </td>
-                            <td className="px-6 py-4 text-center">
+                            <td className="px-4 py-3 text-center">
                               <button
                                 onClick={() => handleToggleTeacherReminders(t.id, reminderOn)}
                                 disabled={!t.active}
@@ -1826,11 +2330,11 @@ const App = () => {
                                 />
                               </button>
                             </td>
-                            <td className="px-6 py-4">
-                              <div className="flex items-center justify-center gap-2">
-                                 <button onClick={() => setImpersonateTeacherId(t.id)} className="press p-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded transition-colors" title="צפה כמורה זה"><BookOpen className="w-4 h-4"/></button>
-                                 <button onClick={() => setTeacherToEdit(t)} className="press p-1.5 hover:bg-green-50 rounded transition-colors"><Edit3 className="w-4 h-4 text-green-600"/></button>
-                                 <button onClick={() => handleDeleteTeacher(t.id, t.name)} className="press p-1.5 hover:bg-red-50 rounded transition-colors"><Trash2 className="w-4 h-4 text-red-500"/></button>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                                 <button onClick={() => setImpersonateTeacherId(t.id)} className="press px-2 py-1 text-xs font-bold bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg transition-colors flex items-center gap-1"><BookOpen className="w-3.5 h-3.5"/> צפה כמורה</button>
+                                 <button onClick={() => setTeacherToEdit(t)} className="press px-2 py-1 text-xs font-bold bg-green-50 text-green-700 hover:bg-green-100 rounded-lg transition-colors flex items-center gap-1"><Edit3 className="w-3.5 h-3.5"/> ערוך</button>
+                                 <button onClick={() => handleDeleteTeacher(t.id, t.name)} className="press px-2 py-1 text-xs font-bold bg-red-50 text-red-600 hover:bg-red-100 rounded-lg transition-colors flex items-center gap-1"><Trash2 className="w-3.5 h-3.5"/> מחק</button>
                               </div>
                             </td>
                           </tr>
@@ -2027,6 +2531,7 @@ const App = () => {
               >
                                 <div className="flex flex-wrap gap-2">
                   <button onClick={() => setShowAddScheduleModal(true)} className="press px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded text-sm flex items-center gap-1.5 shadow-sm"><Plus className="w-4 h-4"/> הגדר שיעור פרטני</button>
+                  <button onClick={() => setAdminTab('timetable')} className="press px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 font-bold rounded text-sm flex items-center gap-1.5 shadow-sm"><Clock className="w-4 h-4"/> לוח שבועי</button>
                   <label className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-bold rounded text-sm flex items-center gap-1.5 shadow-sm cursor-pointer">
                     <Upload className="w-4 h-4"/> ייבוא שיעורים מהאקסל
                     <input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleSchedulesExcelUpload} />
@@ -2037,6 +2542,47 @@ const App = () => {
                   <button onClick={handleExportSchedules} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded text-sm flex items-center gap-1.5 shadow-sm">
                     <Download className="w-4 h-4"/> ייצוא לאקסל
                   </button>
+                </div>
+
+                <div className="bg-white p-3 sm:p-4 rounded-xl shadow-sm border border-gray-100 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-gray-500 block mb-1">חיפוש</label>
+                    <input
+                      value={searchSchedule}
+                      onChange={(e) => setSearchSchedule(e.target.value)}
+                      placeholder="מורה, תלמיד, מקצוע..."
+                      className="w-full p-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-gray-500 block mb-1">מורה</label>
+                    <select
+                      value={filterScheduleTeacher}
+                      onChange={(e) => setFilterScheduleTeacher(e.target.value)}
+                      className="w-full p-2 border border-gray-200 rounded-lg text-sm bg-white"
+                    >
+                      <option value="all">הכל</option>
+                      {teachers.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-gray-500 block mb-1">יום</label>
+                    <select
+                      value={filterScheduleDay}
+                      onChange={(e) => setFilterScheduleDay(e.target.value)}
+                      className="w-full p-2 border border-gray-200 rounded-lg text-sm bg-white"
+                    >
+                      <option value="all">הכל</option>
+                      {['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי'].map((d) => (
+                        <option key={d} value={d}>{d}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <p className="sm:col-span-3 text-xs text-gray-500 font-bold">
+                    מציג {filteredSchedulesList.length} מתוך {schedule.length} שיעורים
+                  </p>
                 </div>
                 
                 <AnimatePresence initial={false}>
@@ -2067,9 +2613,9 @@ const App = () => {
                               </select>
                            </div>
                            <div>
-                              <label className="text-xs font-bold mb-1 block">שעה (משבצת):</label>
+                              <label className="text-xs font-bold mb-1 block">שעה:</label>
                               <select value={newScheduleHour} onChange={e => setNewScheduleHour(e.target.value)} required className="w-full p-2 border rounded-lg bg-white">
-                                {SCHEDULE_HOUR_OPTIONS.map(h => <option key={h} value={h}>{h}</option>)}
+                                {SCHEDULE_HOUR_OPTIONS.map(h => <option key={h} value={h}>{formatHourSlot(h)}</option>)}
                               </select>
                            </div>
                            <div>
@@ -2145,72 +2691,17 @@ const App = () => {
                   </motion.div>
                 )}
 
-                {showAdminReportModal && adminReportingSchedule && (
-                  <motion.div
-                    key="admin-report-form"
-                    initial={{ opacity: 0, y: -8, height: 0 }}
-                    animate={{ opacity: 1, y: 0, height: 'auto' }}
-                    exit={{ opacity: 0, y: -8, height: 0 }}
-                    transition={{ duration: MOTION.durationBase, ease: MOTION.easeOut }}
-                    className="overflow-hidden"
-                  >
-                    <div className="bg-blue-50 p-4 sm:p-6 rounded-lg border border-blue-200 space-y-4">
-                       <h4 className="font-bold text-gray-900 flex items-center gap-2 text-sm sm:text-base"><Edit3 className="w-5 h-5 text-blue-600 shrink-0" /> דיווח מנהל לשיעור ({getScheduleDisplayLabel(adminReportingSchedule, students)} / יום {adminReportingSchedule.day})</h4>
-                       <form onSubmit={handleAdminSubmitReport} className="space-y-4">
-                         <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-4">
-                           <div>
-                             <label className="text-xs font-bold text-gray-600 block mb-1">תאריך השיעור בפועל (יום {adminReportingSchedule.day}):</label>
-                             <input
-                               type="date"
-                               value={reportDate}
-                               onChange={e => setReportDate(e.target.value)}
-                               className="w-full p-2 border rounded bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                               required
-                             />
-                             {reportDate && !isLessonDateForSchedule(adminReportingSchedule, reportDate) && (
-                               <p className="text-xs text-red-600 mt-1">התאריך חייב להיות ביום {adminReportingSchedule.day}</p>
-                             )}
-                           </div>
-                           <div>
-                              <label className="text-xs font-bold text-gray-600 block mb-1">התקיים בפועל?</label>
-                              <select value={reportStatus} onChange={e => setReportStatus(e.target.value as 'completed'|'missed')} className="w-full p-2 border rounded bg-white focus:ring-2 focus:ring-blue-500 outline-none">
-                                <option value="completed">כן, התקיים</option>
-                                <option value="missed">לא, בוטל</option>
-                              </select>
-                           </div>
-                           <div>
-                             <label className="text-xs font-bold text-gray-600 block mb-1">פירוט:</label>
-                             <input type="text" value={reportText} onChange={e => setReportText(e.target.value)} className="w-full p-2 border rounded bg-white focus:ring-2 focus:ring-blue-500 outline-none" required />
-                           </div>
-                         </div>
-                         {reportStatus === 'completed' && (
-                           <StudentPicker
-                             students={getStudentsForAttendance(adminReportingSchedule)}
-                             selectedIds={reportAttendedIds}
-                             onChange={setReportAttendedIds}
-                             lastSessionIds={getLastAttendedStudentIds(adminReportingSchedule.id, reports)}
-                             label={isFlexibleAttendance(adminReportingSchedule) ? 'מי נוכח בשיעור?' : 'סמן מי נוכח'}
-                           />
-                         )}
-                         <div className="flex justify-end gap-2">
-                           <button type="submit" className="press py-2.5 px-6 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-sm w-max">שלח דיווח מנהל</button>
-                           <button type="button" onClick={() => { setShowAdminReportModal(false); setAdminReportingSchedule(null); setReportAttendedIds([]); }} className="press py-2.5 px-6 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold rounded-lg text-sm w-max">בטל</button>
-                         </div>
-                       </form>
-                    </div>
-                  </motion.div>
-                )}
                 </AnimatePresence>
                 
                 <div className="bg-white rounded-lg border border-gray-200 shadow-sm flex-1 overflow-hidden">
                   <div className="md:hidden divide-y">
-                    {schedule.map(s => {
+                    {filteredSchedulesList.map(s => {
                        const teacher = teachers.find(t => t.id === s.teacherId);
                        return (
                          <div key={s.id} className="p-4 space-y-3">
                            <div className="flex flex-wrap items-center gap-2">
                              <span className="px-2.5 py-1 rounded-lg bg-gray-100 text-gray-800 text-xs font-bold">יום {s.day}</span>
-                             <span className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-800 text-xs font-bold font-mono">{s.hour}</span>
+                             <span className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-800 text-xs font-bold">{formatHourSlot(s.hour)}</span>
                              <span className={`text-xs font-bold px-2 py-0.5 rounded ${s.lessonType === 'flexible' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
                                {s.lessonType === 'flexible' ? 'גמיש' : 'קבוע'}
                              </span>
@@ -2220,19 +2711,10 @@ const App = () => {
                              <p className="text-sm text-gray-700 break-words">{getScheduleDisplayLabel(s, students)}</p>
                              <p className="text-xs text-gray-500">{s.subject}</p>
                            </div>
-                           <div className="flex gap-2">
-                             <button onClick={() => {
-                               setAdminReportingSchedule(s);
-                               setReportDate(new Date().toISOString().split('T')[0]);
-                               setReportText('');
-                               setReportStatus('completed');
-                               const expected = getExpectedStudentIdsForReport(s);
-                               const lastIds = getLastAttendedStudentIds(s.id, reports);
-                               setReportAttendedIds(s.lessonType === 'flexible' && lastIds.length > 0 ? lastIds : expected);
-                               setShowAdminReportModal(true);
-                             }} className="press p-2 text-blue-600 hover:bg-blue-50 rounded transition-colors" title="דווח שיעור למורה זה"><ClipboardCheck className="w-4 h-4"/></button>
-                             <button onClick={() => setScheduleToEdit(s)} className="press p-2 text-green-600 hover:bg-green-50 rounded transition-colors" title="ערוך שיעור"><Edit3 className="w-4 h-4"/></button>
-                             <button onClick={() => handleDeleteSchedule(s.id)} className="press p-2 text-red-500 hover:bg-red-50 rounded transition-colors" title="מחק שיעור"><Trash2 className="w-4 h-4"/></button>
+                           <div className="flex flex-wrap gap-2">
+                             <button onClick={() => openAdminReport(s, getLessonDateForScheduleInWeek(s, getWeekStartDateStr(new Date())))} className="press px-3 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors flex items-center gap-1"><ClipboardCheck className="w-3.5 h-3.5"/> דווח</button>
+                             <button onClick={() => setScheduleToEdit(s)} className="press px-3 py-1.5 text-xs font-bold text-green-700 bg-green-50 hover:bg-green-100 rounded-lg transition-colors flex items-center gap-1"><Edit3 className="w-3.5 h-3.5"/> ערוך</button>
+                             <button onClick={() => handleDeleteSchedule(s.id)} className="press px-3 py-1.5 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors flex items-center gap-1"><Trash2 className="w-3.5 h-3.5"/> מחק</button>
                            </div>
                          </div>
                        );
@@ -2241,37 +2723,28 @@ const App = () => {
                   <div className="hidden md:block overflow-x-auto">
                     <table className="w-full text-right border-collapse">
                       <thead>
-                        <tr className="bg-gray-50 border-b text-xs text-gray-500 uppercase"><th className="px-6 py-4">יום</th><th className="px-6 py-4">שעה</th><th className="px-6 py-4">מורה</th><th className="px-6 py-4">סוג</th><th className="px-6 py-4">תלמידים</th><th className="px-6 py-4">מקצוע</th><th className="px-6 py-4">מחק</th></tr>
+                        <tr className="bg-gray-50 border-b text-xs text-gray-500 uppercase"><th className="px-4 py-3">יום</th><th className="px-4 py-3">שעה</th><th className="px-4 py-3">מורה</th><th className="px-4 py-3">סוג</th><th className="px-4 py-3">תלמידים</th><th className="px-4 py-3">מקצוע</th><th className="px-4 py-3 text-center">פעולות</th></tr>
                       </thead>
                       <tbody className="divide-y text-sm">
-                        {schedule.map(s => {
+                        {filteredSchedulesList.map(s => {
                            const teacher = teachers.find(t => t.id === s.teacherId);
                            return (
                              <tr key={s.id} className="hover:bg-blue-50/30 transition-colors">
-                               <td className="px-6 py-4 font-bold text-gray-700">{s.day}</td>
-                               <td className="px-6 py-4 font-mono text-xs text-gray-700">{s.hour}</td>
-                               <td className="px-6 py-4 font-bold">{teacher?.name || 'לא נמצא'}</td>
-                               <td className="px-6 py-4">
+                               <td className="px-4 py-3 font-bold text-gray-700">{s.day}</td>
+                               <td className="px-4 py-3 text-xs font-bold text-blue-800">{formatHourSlot(s.hour)}</td>
+                               <td className="px-4 py-3 font-bold">{teacher?.name || 'לא נמצא'}</td>
+                               <td className="px-4 py-3">
                                  <span className={`text-xs font-bold px-2 py-0.5 rounded ${s.lessonType === 'flexible' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
                                    {s.lessonType === 'flexible' ? 'גמיש' : 'קבוע'}
                                  </span>
                                </td>
-                               <td className="px-6 py-4 text-gray-800">{getScheduleDisplayLabel(s, students)}</td>
-                               <td className="px-6 py-4">{s.subject}</td>
-                               <td className="px-6 py-4">
-                                  <div className="flex gap-2 justify-end">
-                                    <button onClick={() => {
-                                      setAdminReportingSchedule(s);
-                                      setReportDate(new Date().toISOString().split('T')[0]);
-                                      setReportText('');
-                                      setReportStatus('completed');
-                                      const expected = getExpectedStudentIdsForReport(s);
-                                      const lastIds = getLastAttendedStudentIds(s.id, reports);
-                                      setReportAttendedIds(s.lessonType === 'flexible' && lastIds.length > 0 ? lastIds : expected);
-                                      setShowAdminReportModal(true);
-                                    }} className="press p-1.5 text-blue-600 hover:bg-blue-50 rounded transition-colors" title="דווח שיעור למורה זה"><ClipboardCheck className="w-4 h-4"/></button>
-                                    <button onClick={() => setScheduleToEdit(s)} className="press p-1.5 text-green-600 hover:bg-green-50 rounded transition-colors" title="ערוך שיעור"><Edit3 className="w-4 h-4"/></button>
-                                    <button onClick={() => handleDeleteSchedule(s.id)} className="press p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors" title="מחק שיעור"><Trash2 className="w-4 h-4"/></button>
+                               <td className="px-4 py-3 text-gray-800">{getScheduleDisplayLabel(s, students)}</td>
+                               <td className="px-4 py-3">{s.subject}</td>
+                               <td className="px-4 py-3">
+                                  <div className="flex gap-1.5 justify-center flex-wrap">
+                                    <button onClick={() => openAdminReport(s, getLessonDateForScheduleInWeek(s, getWeekStartDateStr(new Date())))} className="press px-2 py-1 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg flex items-center gap-1"><ClipboardCheck className="w-3.5 h-3.5"/> דווח</button>
+                                    <button onClick={() => setScheduleToEdit(s)} className="press px-2 py-1 text-xs font-bold text-green-700 bg-green-50 hover:bg-green-100 rounded-lg flex items-center gap-1"><Edit3 className="w-3.5 h-3.5"/> ערוך</button>
+                                    <button onClick={() => handleDeleteSchedule(s.id)} className="press px-2 py-1 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg flex items-center gap-1"><Trash2 className="w-3.5 h-3.5"/> מחק</button>
                                   </div>
                                </td>
                              </tr>
@@ -2296,10 +2769,15 @@ const App = () => {
                 className="bg-white rounded-lg border border-gray-200 shadow-sm p-3 sm:p-4"
               >
                 <div className="flex flex-col gap-3 mb-4">
-                  <h3 className="font-bold text-lg text-gray-800">מערכת שעות שבועית</h3>
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <h3 className="font-bold text-lg text-gray-800">מעקב דיווחים שבועי</h3>
+                    <button type="button" onClick={() => setAdminTab('schedule')} className="press text-sm font-bold text-blue-700 hover:text-blue-900 self-start">
+                      לעריכת שיבוץ ←
+                    </button>
+                  </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <button onClick={() => setTimetableWeekStart((prev) => new Date(addDaysToDateStr(getWeekStartDateStr(prev), -7) + 'T12:00:00'))} className="press px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded font-bold text-sm transition-colors">שבוע קודם</button>
-                    <span className="font-bold text-gray-800 bg-blue-50 px-3 py-1.5 rounded border border-blue-100 text-sm">שבוע של {getWeekStartDateStr(timetableWeekStart)}</span>
+                    <span className="font-bold text-gray-800 bg-blue-50 px-3 py-1.5 rounded border border-blue-100 text-sm">{formatWeekRangeLabel(getWeekStartDateStr(timetableWeekStart))}</span>
                     <button onClick={() => setTimetableWeekStart((prev) => new Date(addDaysToDateStr(getWeekStartDateStr(prev), 7) + 'T12:00:00'))} className="press px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded font-bold text-sm transition-colors">שבוע הבא</button>
                     <button onClick={() => setTimetableWeekStart(new Date(getWeekStartDateStr(new Date()) + 'T12:00:00'))} className="press px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded font-bold text-sm shadow-sm transition-colors">השבוע הנוכחי</button>
                   </div>
@@ -2323,7 +2801,7 @@ const App = () => {
                           }`}
                         >
                           <div className="text-xs font-bold">{day}</div>
-                          <div className={`text-[10px] mt-0.5 ${isActive ? 'text-blue-100' : 'text-gray-500'}`}>{headerDateStr}</div>
+                          <div className={`text-[10px] mt-0.5 ${isActive ? 'text-blue-100' : 'text-gray-500'}`}>{formatHebrewDateShort(headerDateStr)}</div>
                         </button>
                       );
                     })}
@@ -2361,7 +2839,7 @@ const App = () => {
                                       <div className="mt-2 flex justify-between items-center gap-2">
                                         {statusBadge}
                                         {!weeklyReport && (
-                                          <button onClick={() => { setAdminReportingSchedule(s); setReportDate(cellDateStr); setReportText(''); setReportStatus('completed'); setShowAdminReportModal(true); }} className="press text-blue-600 hover:bg-blue-100 px-2 py-1 rounded transition text-xs font-bold flex items-center gap-1" title="דווח שיעור עבור תאריך זה"><ClipboardCheck className="w-3.5 h-3.5"/> דווח</button>
+                                          <button onClick={() => openAdminReport(s, cellDateStr)} className="press text-blue-600 hover:bg-blue-100 px-2 py-1 rounded transition text-xs font-bold flex items-center gap-1" title="דווח שיעור עבור תאריך זה"><ClipboardCheck className="w-3.5 h-3.5"/> דווח</button>
                                         )}
                                       </div>
                                     </div>
@@ -2390,7 +2868,7 @@ const App = () => {
                             const headerDateStr = addDaysToDateStr(getWeekStartDateStr(timetableWeekStart), idx);
                             return (
                               <th key={day} className="border p-2 bg-gray-100 text-center min-w-[120px]">
-                                {day}<br/><span className="text-xs font-normal text-gray-500">{headerDateStr}</span>
+                                {day}<br/><span className="text-xs font-normal text-gray-500">{formatHebrewDateShort(headerDateStr)}</span>
                               </th>
                             );
                           })}
@@ -2431,7 +2909,7 @@ const App = () => {
                                             <div className="mt-1 flex justify-between items-center">
                                               {statusBadge}
                                               {!weeklyReport && (
-                                                <button onClick={() => { setAdminReportingSchedule(s); setReportDate(cellDateStr); setReportText(''); setReportStatus('completed'); setShowAdminReportModal(true); }} className="text-blue-600 hover:bg-blue-100 px-1 rounded transition" title="דווח שיעור עבור תאריך זה המשוייך לשבוע זה"><ClipboardCheck className="w-3 h-3"/></button>
+                                                <button onClick={() => openAdminReport(s, cellDateStr)} className="press text-blue-600 hover:bg-blue-100 px-1.5 py-1 rounded transition text-xs font-bold flex items-center gap-1" title="דווח שיעור"><ClipboardCheck className="w-3.5 h-3.5"/><span className="hidden xl:inline">דווח</span></button>
                                               )}
                                             </div>
                                           </div>
@@ -2462,12 +2940,14 @@ const App = () => {
                 transition={tabTransition}
                 className="space-y-6"
               >
-                <div className="bg-white p-4 sm:p-6 rounded-lg shadow-sm border">
+                <div className="bg-white p-4 sm:p-5 rounded-xl shadow-sm border border-gray-100">
                     <h4 className="font-bold text-gray-900 text-sm mb-4">סנן דיווחי שיעור</h4>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
                        <div><label className="text-xs font-bold block mb-1">מורה:</label><select className="w-full p-2 border rounded-lg bg-gray-50" value={filterTeacher} onChange={e => setFilterTeacher(e.target.value)}><option value="all">הכל</option>{teachers.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></div>
                        <div><label className="text-xs font-bold block mb-1">סטטוס:</label><select className="w-full p-2 border rounded-lg bg-gray-50" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}><option value="all">הכל</option><option value="completed">התקיים</option><option value="missed">בוטל</option></select></div>
-                       <div className="sm:col-span-2"><label className="text-xs font-bold block mb-1">חיפוש חופשי:</label><input className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500" value={searchStudent} onChange={e=>setSearchStudent(e.target.value)} placeholder="שם תלמיד, מקצוע..." /></div>
+                       <div><label className="text-xs font-bold block mb-1">מתאריך:</label><input type="date" className="w-full p-2 border rounded-lg bg-gray-50" value={filterReportDateFrom} onChange={e => setFilterReportDateFrom(e.target.value)} dir="ltr" /></div>
+                       <div><label className="text-xs font-bold block mb-1">עד תאריך:</label><input type="date" className="w-full p-2 border rounded-lg bg-gray-50" value={filterReportDateTo} onChange={e => setFilterReportDateTo(e.target.value)} dir="ltr" /></div>
+                       <div className="sm:col-span-2 lg:col-span-1"><label className="text-xs font-bold block mb-1">חיפוש:</label><input className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500" value={searchStudent} onChange={e=>setSearchStudent(e.target.value)} placeholder="תלמיד, מקצוע..." /></div>
                     </div>
                 </div>
 
@@ -2486,10 +2966,11 @@ const App = () => {
                              <div className="min-w-0">
                                <p className="font-bold text-gray-900 break-words">{teach?.name || '-'}</p>
                                <p className="text-sm text-gray-700 break-words">{sched ? getReportAttendedLabel(rep, sched, students) || getScheduleDisplayLabel(sched, students) : 'נמחק'}</p>
-                               <p className="text-xs text-gray-500">{rep.date} · {sched?.subject || '-'}</p>
+                               <p className="text-xs text-gray-500">{formatHebrewDateShort(rep.date)} · {sched?.subject || '-'}</p>
                              </div>
                              <div className="flex items-center gap-2 shrink-0">
                                <span className={`px-2 py-1 rounded text-xs font-bold ${rep.status==='completed' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{rep.status==='completed' ? 'התקיים' : 'בוטל'}</span>
+                               <button onClick={() => openAdminEditReport(rep)} className="press px-2 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg"><Edit3 className="w-3.5 h-3.5"/></button>
                                <button onClick={() => handleDeleteReport(rep.id)} className="press p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"><Trash2 className="w-4 h-4"/></button>
                              </div>
                            </div>
@@ -2504,7 +2985,7 @@ const App = () => {
                     <table className="w-full text-right border-collapse">
                       <thead>
                         <tr className="bg-gray-50 text-xs font-bold text-gray-500 border-b">
-                          <th className="px-6 py-4">תאריך</th><th className="px-6 py-4">מורה</th><th className="px-6 py-4">תלמיד</th><th className="px-6 py-4">מקצוע</th><th className="px-6 py-4">סטטוס</th><th className="px-6 py-4">פירוט</th><th className="px-6 py-4"></th>
+                          <th className="px-4 py-3">תאריך</th><th className="px-4 py-3">מורה</th><th className="px-4 py-3">תלמיד</th><th className="px-4 py-3">מקצוע</th><th className="px-4 py-3">סטטוס</th><th className="px-4 py-3">פירוט</th><th className="px-4 py-3 text-center">פעולות</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y text-sm">
@@ -2513,12 +2994,18 @@ const App = () => {
                            const teach = teachers.find(t => t.id === rep.teacherId);
                            return (
                              <tr key={rep.id} className="hover:bg-blue-50/30 transition-colors">
-                               <td className="px-6 py-4">{rep.date}</td>
-                               <td className="px-6 py-4 font-bold">{teach?.name || '-'}</td>
-                               <td className="px-6 py-4">{sched ? getReportAttendedLabel(rep, sched, students) || getScheduleDisplayLabel(sched, students) : 'נמחק'}</td>
-                               <td className="px-6 py-4">{sched?.subject || '-'}</td>
-                               <td className="px-6 py-4"><span className={`px-2 py-1 rounded text-xs font-bold ${rep.status==='completed' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{rep.status==='completed' ? 'התקיים' : 'בוטל'}</span></td>
-                               <td className="px-6 py-4 italic max-w-xs">{rep.text}</td><td className="px-6 py-4"><button onClick={() => handleDeleteReport(rep.id)} className="press p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"><Trash2 className="w-4 h-4"/></button></td>
+                               <td className="px-4 py-3">{formatHebrewDateShort(rep.date)}</td>
+                               <td className="px-4 py-3 font-bold">{teach?.name || '-'}</td>
+                               <td className="px-4 py-3">{sched ? getReportAttendedLabel(rep, sched, students) || getScheduleDisplayLabel(sched, students) : 'נמחק'}</td>
+                               <td className="px-4 py-3">{sched?.subject || '-'}</td>
+                               <td className="px-4 py-3"><span className={`px-2 py-1 rounded text-xs font-bold ${rep.status==='completed' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{rep.status==='completed' ? 'התקיים' : 'בוטל'}</span></td>
+                               <td className="px-4 py-3 italic max-w-xs">{rep.text}</td>
+                               <td className="px-4 py-3">
+                                 <div className="flex items-center justify-center gap-1.5">
+                                   <button onClick={() => openAdminEditReport(rep)} className="press px-2 py-1 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg flex items-center gap-1"><Edit3 className="w-3.5 h-3.5"/> ערוך</button>
+                                   <button onClick={() => handleDeleteReport(rep.id)} className="press px-2 py-1 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg flex items-center gap-1"><Trash2 className="w-3.5 h-3.5"/> מחק</button>
+                                 </div>
+                               </td>
                              </tr>
                            )
                         })}
@@ -2540,8 +3027,26 @@ const App = () => {
                 transition={tabTransition}
                 className="space-y-6"
               >
+                {missingThisWeekCount > 0 && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div>
+                      <p className="font-bold text-amber-950 text-sm sm:text-base">
+                        יש {missingThisWeekCount} שיעורים שלא דווחו השבוע
+                      </p>
+                      <p className="text-xs text-amber-800/80 mt-0.5">עבור ללוח השבועי כדי לדווח או לעקוב אחרי מורים</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAdminTab('timetable')}
+                      className="press px-4 py-2.5 rounded-xl text-sm font-bold bg-amber-500 hover:bg-amber-600 text-[#111827] shrink-0"
+                    >
+                      פתח לוח שבועי
+                    </button>
+                  </div>
+                )}
+
                 {/* Period selector */}
-                <div className="bg-white rounded border p-4 space-y-3">
+                <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-2 font-bold text-gray-700">
                       <Calendar className="w-4 h-4 text-indigo-600" />
@@ -2714,14 +3219,18 @@ const App = () => {
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0">
-                              <div className="font-bold text-gray-900 break-words">
+                              <button
+                                type="button"
+                                onClick={() => { setFilterTeacher(tc.teacher.id); setAdminTab('reports'); }}
+                                className="font-bold text-gray-900 break-words text-right hover:text-blue-700"
+                              >
                                 {tc.teacher.name}
                                 {!tc.teacher.active && (
                                   <span className="mr-2 text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">
                                     לא פעיל
                                   </span>
                                 )}
-                              </div>
+                              </button>
                               <div className="text-xs text-gray-400 break-all" dir="ltr">{tc.teacher.email}</div>
                             </div>
                             <span
@@ -2798,14 +3307,18 @@ const App = () => {
                               }`}
                             >
                               <td className="p-3">
-                                <div className="font-bold text-gray-900">
+                                <button
+                                  type="button"
+                                  onClick={() => { setFilterTeacher(tc.teacher.id); setAdminTab('reports'); }}
+                                  className="font-bold text-gray-900 hover:text-blue-700 text-right"
+                                >
                                   {tc.teacher.name}
                                   {!tc.teacher.active && (
                                     <span className="mr-2 text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">
                                       לא פעיל
                                     </span>
                                   )}
-                                </div>
+                                </button>
                                 <div className="text-xs text-gray-400" dir="ltr">{tc.teacher.email}</div>
                               </td>
                               <td className="text-center p-3 font-mono text-sm text-gray-600">
@@ -3016,6 +3529,80 @@ const App = () => {
               </motion.div>
             )}
             </AnimatePresence>
+            </div>
+
+            {/* Admin report modal — available from schedule + timetable + reports */}
+            <Modal
+              open={showAdminReportModal && !!adminReportingSchedule}
+              onClose={closeAdminReportModal}
+              title={editingAdminReport ? 'עריכת דיווח' : 'דיווח מנהל'}
+              maxWidthClassName="max-w-lg"
+            >
+              {adminReportingSchedule && (
+                <form onSubmit={handleAdminSubmitReport} className="space-y-4">
+                  <div>
+                    <h3 className="font-bold text-lg text-gray-900">
+                      {editingAdminReport ? 'עריכת דיווח' : 'דיווח מנהל'}
+                    </h3>
+                    <p className="text-sm text-gray-500 mt-0.5">
+                      {getScheduleDisplayLabel(adminReportingSchedule, students)} · יום {adminReportingSchedule.day} · {formatHourSlot(adminReportingSchedule.hour)}
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-gray-600 block mb-1">תאריך השיעור (יום {adminReportingSchedule.day}):</label>
+                    <input
+                      type="date"
+                      value={reportDate}
+                      onChange={e => setReportDate(e.target.value)}
+                      className="w-full p-2.5 border border-gray-200 rounded-xl bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                      required
+                    />
+                    {reportDate && !isLessonDateForSchedule(adminReportingSchedule, reportDate) && (
+                      <p className="text-xs text-red-600 mt-1">התאריך חייב להיות ביום {adminReportingSchedule.day}</p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-gray-600 block mb-1.5">התקיים בפועל?</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button type="button" onClick={() => setReportStatus('completed')} className={`press py-2.5 rounded-xl font-bold text-sm ${reportStatus === 'completed' ? 'bg-green-600 text-white' : 'bg-white border border-gray-200'}`}>כן, התקיים</button>
+                      <button type="button" onClick={() => setReportStatus('missed')} className={`press py-2.5 rounded-xl font-bold text-sm ${reportStatus === 'missed' ? 'bg-red-600 text-white' : 'bg-white border border-gray-200'}`}>לא, בוטל</button>
+                    </div>
+                  </div>
+                  {reportStatus === 'completed' && (
+                    <StudentPicker
+                      students={getStudentsForAttendance(adminReportingSchedule)}
+                      selectedIds={reportAttendedIds}
+                      onChange={setReportAttendedIds}
+                      lastSessionIds={getLastAttendedStudentIds(adminReportingSchedule.id, reports)}
+                      label={isFlexibleAttendance(adminReportingSchedule) ? 'מי נוכח בשיעור?' : 'סמן מי נוכח'}
+                    />
+                  )}
+                  <div>
+                    <label className="text-xs font-bold text-gray-600 block mb-1">
+                      {reportStatus === 'missed' ? 'סיבת ביטול (חובה)' : 'פירוט (אופציונלי)'}
+                    </label>
+                    <input
+                      type="text"
+                      value={reportText}
+                      onChange={e => setReportText(e.target.value)}
+                      className="w-full p-2.5 border border-gray-200 rounded-xl bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                      required={reportStatus === 'missed'}
+                      placeholder={reportStatus === 'missed' ? 'סיבת הביטול' : 'מה התבצע?'}
+                    />
+                  </div>
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="submit"
+                      disabled={adminReportSubmitting}
+                      className="press flex-1 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2"
+                    >
+                      {adminReportSubmitting ? (<><Loader2 className="w-4 h-4 animate-spin" /> שומר...</>) : (editingAdminReport ? 'עדכן דיווח' : 'שלח דיווח')}
+                    </button>
+                    <button type="button" onClick={closeAdminReportModal} className="press px-4 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl text-sm">בטל</button>
+                  </div>
+                </form>
+              )}
+            </Modal>
           </div>
         )}
       </main>
@@ -3109,7 +3696,7 @@ const App = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="text-sm font-bold mb-1 block">שעה (משבצת 0–10):</label>
+                  <label className="text-sm font-bold mb-1 block">שעה:</label>
                   <select
                     value={scheduleToEdit.hour}
                     onChange={e => setScheduleToEdit({...scheduleToEdit, hour: e.target.value})}
@@ -3117,10 +3704,10 @@ const App = () => {
                     className="w-full p-2 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                   >
                     {!(SCHEDULE_HOUR_OPTIONS as readonly string[]).includes(scheduleToEdit.hour) && scheduleToEdit.hour && (
-                      <option value={scheduleToEdit.hour}>{scheduleToEdit.hour} (קיים)</option>
+                      <option value={scheduleToEdit.hour}>{formatHourSlot(scheduleToEdit.hour)} (קיים)</option>
                     )}
                     {SCHEDULE_HOUR_OPTIONS.map(h => (
-                      <option key={h} value={h}>{h}</option>
+                      <option key={h} value={h}>{formatHourSlot(h)}</option>
                     ))}
                   </select>
                 </div>

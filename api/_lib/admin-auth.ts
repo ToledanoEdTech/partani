@@ -5,12 +5,12 @@
  *   1. `Authorization: Bearer <Firebase ID token>` from a signed-in admin
  *   2. `Authorization: Bearer ${CRON_SECRET}` (same as cron / curl tooling)
  *
- * Admin identity matches the frontend: email must equal ADMIN_EMAIL
- * (env `ADMIN_EMAIL`, defaulting to the hardcoded admin address).
+ * Admin identity: primary ADMIN_EMAIL, or a document in Firestore
+ * `admins/{email}` (same as firestore.rules / frontend).
  */
 import type { VercelRequest } from '@vercel/node';
 
-import { getAdminAuth } from './firebase-admin.js';
+import { getAdminAuth, getAdminDb } from './firebase-admin.js';
 
 const DEFAULT_ADMIN_EMAIL = 'yossitole@gmail.com';
 
@@ -29,6 +29,19 @@ function isCronSecret(token: string): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return process.env.NODE_ENV !== 'production' && token === 'dev';
   return token === secret;
+}
+
+async function isEmailAdmin(email: string): Promise<boolean> {
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized === getAdminEmail()) return true;
+  try {
+    const snap = await getAdminDb().collection('admins').doc(normalized).get();
+    return snap.exists;
+  } catch (err) {
+    console.error('[admin-auth] failed to read admins doc', err);
+    return false;
+  }
 }
 
 export type AdminAuthResult =
@@ -57,7 +70,11 @@ export async function requireAdmin(req: VercelRequest): Promise<AdminAuthResult>
   try {
     const decoded = await getAdminAuth().verifyIdToken(token);
     const email = (decoded.email || '').trim().toLowerCase();
-    if (!email || email !== getAdminEmail()) {
+    if (!email) {
+      return { ok: false, status: 403, error: 'forbidden' };
+    }
+    const allowed = await isEmailAdmin(email);
+    if (!allowed) {
       return { ok: false, status: 403, error: 'forbidden' };
     }
     return { ok: true, email, via: 'firebase' };

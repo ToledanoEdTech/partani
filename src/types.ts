@@ -48,6 +48,13 @@ export interface Student {
   active: boolean;
 }
 
+/** Document in the `admins/{email}` collection (email is the doc id). */
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string;
+}
+
 export type LessonType = 'fixed' | 'flexible';
 
 export interface Schedule {
