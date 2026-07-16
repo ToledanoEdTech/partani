@@ -57,6 +57,7 @@ import {
   addDaysToDateStr,
   buildDashboardAnalytics,
   formatDateInTZ,
+  getEmailReminderScheduleInfo,
   getMissingLessonsForTeacherThisWeek,
   getWeekStartDateStr,
 } from './lib/lesson-stats';
@@ -624,6 +625,10 @@ const App = () => {
     Number.isFinite(Number(emailRemindersCfg.minMissingLessons))
       ? Number(emailRemindersCfg.minMissingLessons)
       : 1
+  );
+  const remindersScheduleInfo = useMemo(
+    () => getEmailReminderScheduleInfo(new Date(), emailRemindersCfg.lastRunAt),
+    [emailRemindersCfg.lastRunAt],
   );
 
   const scheduleSubjectOptions = useMemo(
@@ -1808,7 +1813,7 @@ const App = () => {
                       </h3>
                       <p className="text-sm text-gray-500 mt-1">
                         שליחה אוטומטית של תזכורת למורים פעילים שלא דיווחו על לפחות {remindersMinMissing} שיעורים שכבר התקיימו השבוע.
-                        המערכת רצה אוטומטית בכל יום חמישי בערב, ושולחת לכל מורה לכל היותר מייל אחד בשבוע.
+                        המערכת רצה אוטומטית בכל יום חמישי ב־20:00 שעון ישראל בקיץ (19:00 בחורף), ושולחת לכל מורה לכל היותר מייל אחד בשבוע.
                       </p>
                     </div>
                     <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
@@ -1850,32 +1855,67 @@ const App = () => {
                       </div>
                     </div>
 
-                    <div className="bg-gray-50 border border-gray-200 p-5 rounded-lg space-y-2">
-                      <label className="block text-sm font-bold text-gray-800">ריצה אחרונה</label>
-                      {emailRemindersCfg.lastRunAt ? (
-                        <>
-                          <p className="text-xs text-gray-500">
-                            תאריך: <span className="font-mono text-gray-700">{new Date(emailRemindersCfg.lastRunAt).toLocaleString('he-IL', { timeZone: ISRAEL_TIMEZONE })}</span>
+                    <div className="bg-gray-50 border border-gray-200 p-5 rounded-lg space-y-3">
+                      <div className="space-y-1">
+                        <label className="block text-sm font-bold text-gray-800">ריצה הבאה</label>
+                        <p className="text-xs text-gray-500">
+                          מתוזמן ל־
+                          <span className="font-mono text-gray-800">
+                            {remindersScheduleInfo.nextAt.toLocaleString('he-IL', {
+                              timeZone: ISRAEL_TIMEZONE,
+                              weekday: 'long',
+                              day: 'numeric',
+                              month: 'long',
+                              year: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </span>
+                          {' '}(שעון ישראל)
+                        </p>
+                        {remindersScheduleInfo.status === 'in-window' && (
+                          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded px-2 py-1.5">
+                            חלון הריצה פתוח עכשיו — בתוכנית Hobby של Vercel ייתכן שהשליחה תתבצע עד סוף השעה (ולא בדיוק בדקה 00).
                           </p>
-                          {emailRemindersCfg.lastRunSummary && (
-                            <div className="flex flex-wrap gap-2 pt-2">
-                              <span className="text-xs font-bold bg-green-100 text-green-800 px-2.5 py-1 rounded">
-                                {emailRemindersCfg.lastRunSummary.sent} נשלחו
+                        )}
+                        {remindersScheduleInfo.status === 'possibly-missed' && (
+                          <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded px-2 py-1.5">
+                            חלון הריצה האחרון עבר בלי עדכון של «ריצה אחרונה». ייתכן שה-cron נכשל (הרשאה / SMTP / כיבוי גלובלי) — בדוק ב-Vercel → Logs, או השתמש ב«שלח תזכורות עכשיו».
+                          </p>
+                        )}
+                      </div>
+                      <div className="border-t border-gray-200 pt-3 space-y-1">
+                        <label className="block text-sm font-bold text-gray-800">ריצה אחרונה</label>
+                        {emailRemindersCfg.lastRunAt ? (
+                          <>
+                            <p className="text-xs text-gray-500">
+                              תאריך:{' '}
+                              <span className="font-mono text-gray-700">
+                                {new Date(emailRemindersCfg.lastRunAt).toLocaleString('he-IL', {
+                                  timeZone: ISRAEL_TIMEZONE,
+                                })}
                               </span>
-                              <span className="text-xs font-bold bg-gray-100 text-gray-700 px-2.5 py-1 rounded">
-                                {emailRemindersCfg.lastRunSummary.skipped} נדלגו
-                              </span>
-                              {emailRemindersCfg.lastRunSummary.errors > 0 && (
-                                <span className="text-xs font-bold bg-red-100 text-red-800 px-2.5 py-1 rounded">
-                                  {emailRemindersCfg.lastRunSummary.errors} שגיאות
+                            </p>
+                            {emailRemindersCfg.lastRunSummary && (
+                              <div className="flex flex-wrap gap-2 pt-2">
+                                <span className="text-xs font-bold bg-green-100 text-green-800 px-2.5 py-1 rounded">
+                                  {emailRemindersCfg.lastRunSummary.sent} נשלחו
                                 </span>
-                              )}
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <p className="text-xs text-gray-500">המערכת טרם הריצה תזכורות. הריצה הראשונה תתבצע ביום חמישי הקרוב בערב.</p>
-                      )}
+                                <span className="text-xs font-bold bg-gray-100 text-gray-700 px-2.5 py-1 rounded">
+                                  {emailRemindersCfg.lastRunSummary.skipped} נדלגו
+                                </span>
+                                {emailRemindersCfg.lastRunSummary.errors > 0 && (
+                                  <span className="text-xs font-bold bg-red-100 text-red-800 px-2.5 py-1 rounded">
+                                    {emailRemindersCfg.lastRunSummary.errors} שגיאות
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <p className="text-xs text-gray-500">המערכת טרם הריצה תזכורות בהצלחה.</p>
+                        )}
+                      </div>
                     </div>
                   </div>
 

@@ -86,6 +86,110 @@ export function getWeekKey(date: Date, timeZone: string = ISRAEL_TIMEZONE): stri
   return getWeekStartDateStr(date, timeZone);
 }
 
+/**
+ * Must match `vercel.json` → `crons` → `/api/cron/email-reminders` schedule
+ * (`0 17 * * 4` = Thursday 17:00 UTC). Vercel cron is always UTC.
+ * In Israel that is 20:00 in summer (IDT) / 19:00 in winter (IST).
+ */
+export const EMAIL_REMINDERS_CRON_UTC = {
+  /** JS `Date.getUTCDay()`: 0=Sun … 4=Thu */
+  dayOfWeek: 4,
+  hour: 17,
+  minute: 0,
+} as const;
+
+/** Start of the most recent (or current) Thursday 17:00 UTC slot at/before `now`. */
+export function getLatestEmailReminderSlotStart(now: Date = new Date()): Date {
+  const { dayOfWeek, hour, minute } = EMAIL_REMINDERS_CRON_UTC;
+  const dow = now.getUTCDay();
+  const daysSince = (dow - dayOfWeek + 7) % 7;
+  const slot = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - daysSince, hour, minute, 0, 0),
+  );
+  if (slot.getTime() > now.getTime()) {
+    slot.setUTCDate(slot.getUTCDate() - 7);
+  }
+  return slot;
+}
+
+/**
+ * Next scheduled email-reminders cron instant (Thursday 17:00 UTC).
+ * If `now` is exactly on a slot, returns the following week's slot.
+ */
+export function getNextEmailReminderRunAt(now: Date = new Date()): Date {
+  const { dayOfWeek, hour, minute } = EMAIL_REMINDERS_CRON_UTC;
+  const dow = now.getUTCDay();
+  let daysUntil = (dayOfWeek - dow + 7) % 7;
+  const todaySlot = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, minute, 0, 0),
+  );
+  if (daysUntil === 0 && now.getTime() >= todaySlot.getTime()) {
+    daysUntil = 7;
+  }
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysUntil, hour, minute, 0, 0),
+  );
+}
+
+export type EmailReminderScheduleStatus = 'upcoming' | 'in-window' | 'possibly-missed';
+
+export interface EmailReminderScheduleInfo {
+  /** Nominal next fire time (Thursday 17:00 UTC), or the current slot if still in-window. */
+  nextAt: Date;
+  /** This week's Thursday 17:00 UTC slot (most recent at/before now, or upcoming if before first). */
+  latestSlotAt: Date;
+  status: EmailReminderScheduleStatus;
+}
+
+/**
+ * Schedule status for the UI. On Vercel Hobby, cron may fire anytime in the
+ * scheduled hour (17:00–17:59 UTC), so we keep `in-window` until 18:00 UTC.
+ */
+export function getEmailReminderScheduleInfo(
+  now: Date = new Date(),
+  lastRunAt?: string | null,
+): EmailReminderScheduleInfo {
+  const { hour, minute } = EMAIL_REMINDERS_CRON_UTC;
+  const dow = now.getUTCDay();
+  let daysUntil = (EMAIL_REMINDERS_CRON_UTC.dayOfWeek - dow + 7) % 7;
+  const todaySlot = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, minute, 0, 0),
+  );
+
+  const lastRunMs = lastRunAt ? Date.parse(lastRunAt) : NaN;
+  const ranAfter = (slot: Date) => Number.isFinite(lastRunMs) && lastRunMs >= slot.getTime();
+  const latestSlotAt = getLatestEmailReminderSlotStart(now);
+
+  // Thursday before the slot — next run is later today; don't flag last week as "missed".
+  if (daysUntil === 0 && now.getTime() < todaySlot.getTime()) {
+    return { nextAt: todaySlot, latestSlotAt, status: 'upcoming' };
+  }
+
+  // Still inside today's scheduled hour and no successful write of lastRunAt yet.
+  if (daysUntil === 0 && now.getTime() >= todaySlot.getTime()) {
+    const windowEnd = new Date(todaySlot.getTime() + 60 * 60 * 1000);
+    if (now.getTime() < windowEnd.getTime() && !ranAfter(todaySlot)) {
+      return { nextAt: todaySlot, latestSlotAt: todaySlot, status: 'in-window' };
+    }
+  }
+
+  const nextAt = getNextEmailReminderRunAt(now);
+  const windowEndMs = latestSlotAt.getTime() + 60 * 60 * 1000;
+
+  // Past the hour window for the latest slot, but lastRunAt never recorded for it.
+  // If the system never ran at all, only warn for ~36h after the slot (Thu eve / Fri),
+  // so mid-week doesn't look like a failure before the first successful cron.
+  if (now.getTime() >= windowEndMs && !ranAfter(latestSlotAt)) {
+    const hadPriorRun = Number.isFinite(lastRunMs);
+    const recentlyDue = now.getTime() - windowEndMs < 36 * 60 * 60 * 1000;
+    if (hadPriorRun || recentlyDue) {
+      return { nextAt, latestSlotAt, status: 'possibly-missed' };
+    }
+  }
+
+  return { nextAt, latestSlotAt, status: 'upcoming' };
+}
+
 export interface MissingLesson {
   scheduleId: string;
   date: string; // YYYY-MM-DD (IL)
