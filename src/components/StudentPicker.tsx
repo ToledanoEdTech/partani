@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Search, Users, RotateCcw } from 'lucide-react';
+import { Search, Users, RotateCcw, CheckCheck } from 'lucide-react';
 import { Student } from '../types';
 import { getUniqueClassNames } from '../lib/students';
 
@@ -11,6 +11,8 @@ interface StudentPickerProps {
   lastSessionIds?: string[];
   label?: string;
   maxHeight?: string;
+  /** Show "select all active / clear" shortcuts (default true). */
+  showSelectAll?: boolean;
 }
 
 const StudentPicker: React.FC<StudentPickerProps> = ({
@@ -20,6 +22,7 @@ const StudentPicker: React.FC<StudentPickerProps> = ({
   lastSessionIds = [],
   label = 'בחר תלמידים',
   maxHeight = 'max-h-48',
+  showSelectAll = true,
 }) => {
   const [search, setSearch] = useState('');
   const [classFilter, setClassFilter] = useState('');
@@ -53,22 +56,51 @@ const StudentPicker: React.FC<StudentPickerProps> = ({
     if (valid.length > 0) onChange(valid);
   };
 
+  const selectAllVisible = () => {
+    const ids = filtered.map((s) => s.id);
+    const merged = Array.from(new Set([...selectedIds, ...ids]));
+    onChange(merged);
+  };
+
+  const clearSelection = () => onChange([]);
+
   const lastSessionAvailable = lastSessionIds.some((id) => activeStudents.some((s) => s.id === id));
 
   return (
     <div className="space-y-2">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <label className="text-xs font-bold text-gray-600">{label}</label>
-        {lastSessionAvailable && (
-          <button
-            type="button"
-            onClick={selectLastSession}
-            className="text-xs font-bold text-indigo-700 hover:text-indigo-900 flex items-center gap-1 self-start sm:self-auto"
-          >
-            <RotateCcw className="w-3 h-3" />
-            כמו בפעם הקודמת
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+          {showSelectAll && filtered.length > 0 && (
+            <button
+              type="button"
+              onClick={selectAllVisible}
+              className="text-xs font-bold text-green-700 hover:text-green-900 flex items-center gap-1"
+            >
+              <CheckCheck className="w-3 h-3" />
+              סמן הכל
+            </button>
+          )}
+          {showSelectAll && selectedIds.length > 0 && (
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="text-xs font-bold text-gray-500 hover:text-gray-800"
+            >
+              נקה
+            </button>
+          )}
+          {lastSessionAvailable && (
+            <button
+              type="button"
+              onClick={selectLastSession}
+              className="text-xs font-bold text-blue-700 hover:text-blue-900 flex items-center gap-1"
+            >
+              <RotateCcw className="w-3 h-3" />
+              כמו בפעם הקודמת
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-col sm:flex-row gap-2">

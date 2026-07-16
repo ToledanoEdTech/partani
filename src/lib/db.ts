@@ -152,6 +152,14 @@ export async function addReport(report: Omit<Report, 'id'>) {
   }
 }
 
+export async function updateReport(id: string, data: Partial<Omit<Report, 'id'>>) {
+  try {
+    await setDoc(doc(db, 'reports', id), data, { merge: true });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `reports/${id}`);
+  }
+}
+
 export async function deleteReport(id: string) {
   try {
     await deleteDoc(doc(db, 'reports', id));
