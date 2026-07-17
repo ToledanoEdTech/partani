@@ -34,11 +34,28 @@ export interface EmailReminderSettings {
   lastSentByTeacher?: Record<string, string>;
 }
 
+/**
+ * A school holiday / vacation window when recurring lessons are cancelled
+ * (excluded from reminders and compliance "expected" counts).
+ * Dates are inclusive calendar days in YYYY-MM-DD (Israel school calendar).
+ */
+export interface HolidayPeriod {
+  startDate: string;
+  endDate: string;
+  /** Optional label, e.g. "חופשת פסח". */
+  name?: string;
+}
+
 /** Shape of the `settings/general` document (partial — only fields the app reads). */
 export interface AppSettings {
   emailReminders?: EmailReminderSettings;
   /** Admin-added subjects beyond the built-in schedule subject list. */
   scheduleSubjects?: string[];
+  /**
+   * Dates (or ranges) when lessons do not run. Stored on `settings/general`
+   * and applied when computing missing/expected lessons.
+   */
+  holidays?: HolidayPeriod[];
 }
 
 export interface Student {

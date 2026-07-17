@@ -7,6 +7,7 @@
  */
 
 import type { Report, Schedule, Teacher } from '../types';
+import { isHolidayDate } from './holidays';
 
 export const ISRAEL_TIMEZONE = 'Asia/Jerusalem';
 
@@ -202,7 +203,7 @@ export interface MissingLesson {
 /**
  * Compute lessons in the current IL calendar week that have already
  * occurred (date ≤ today, IL time) and for which no report exists.
- * Mirrors the inline logic at lines ~972–978 in `src/App.tsx`.
+ * Holiday / vacation dates in `holidayDates` are excluded (lessons cancelled).
  */
 export function getMissingLessonsForTeacherThisWeek(params: {
   teacherId: string;
@@ -210,10 +211,13 @@ export function getMissingLessonsForTeacherThisWeek(params: {
   reports: Pick<Report, 'scheduleId' | 'date'>[];
   now?: Date;
   timeZone?: string;
+  /** YYYY-MM-DD dates when lessons do not run (from settings.holidays). */
+  holidayDates?: Set<string> | null;
 }): MissingLesson[] {
   const { teacherId, schedules, reports } = params;
   const now = params.now ?? new Date();
   const timeZone = params.timeZone ?? ISRAEL_TIMEZONE;
+  const holidayDates = params.holidayDates ?? null;
 
   const weekStartStr = getWeekStartDateStr(now, timeZone);
   const todayStr = formatDateInTZ(now, timeZone);
@@ -226,6 +230,7 @@ export function getMissingLessonsForTeacherThisWeek(params: {
     if (offset === undefined) continue;
     const cellDateStr = addDaysToDateStr(weekStartStr, offset);
     if (cellDateStr > todayStr) continue; // not yet past — not missing
+    if (isHolidayDate(cellDateStr, holidayDates)) continue; // cancelled for vacation
     const reported = reports.some((r) => {
       if (r.scheduleId !== slot.id) return false;
       if (r.date === cellDateStr) return true;
@@ -254,6 +259,7 @@ export function getMissingCountForTeacherThisWeek(params: {
   reports: Pick<Report, 'scheduleId' | 'date'>[];
   now?: Date;
   timeZone?: string;
+  holidayDates?: Set<string> | null;
 }): number {
   return getMissingLessonsForTeacherThisWeek(params).length;
 }
@@ -269,6 +275,7 @@ export function isTeacherReminderEligible(params: {
   minMissingLessons: number;
   now?: Date;
   timeZone?: string;
+  holidayDates?: Set<string> | null;
 }): { eligible: boolean; reason?: string; missing: MissingLesson[] } {
   const { teacher } = params;
   if (!teacher.active) return { eligible: false, reason: 'inactive', missing: [] };
@@ -281,6 +288,7 @@ export function isTeacherReminderEligible(params: {
     reports: params.reports,
     now: params.now,
     timeZone: params.timeZone,
+    holidayDates: params.holidayDates,
   });
 
   if (missing.length < params.minMissingLessons) {
@@ -447,13 +455,15 @@ export function filterReportsForActiveSchedules<
 /**
  * Due lessons in the analytics window: schedule occurrences in range whose
  * calendar date has already passed (≤ todayStr). Future lessons are excluded
- * so teachers are not penalised before the lesson happens.
+ * so teachers are not penalised before the lesson happens. Holiday dates are
+ * also excluded (cancelled — not expected).
  */
 export function computeDueExpectedSlots(
   schedules: Pick<Schedule, 'id' | 'teacherId' | 'day'>[],
   startStr: string,
   endStr: string,
   todayStr: string,
+  holidayDates?: Set<string> | null,
 ): DueExpectedSlot[] {
   const slots: DueExpectedSlot[] = [];
   for (const schedule of schedules) {
@@ -461,6 +471,7 @@ export function computeDueExpectedSlots(
     if (dow === undefined) continue;
     for (const date of getExpectedDatesForScheduleDay(schedule.day, startStr, endStr)) {
       if (date > todayStr) continue;
+      if (isHolidayDate(date, holidayDates)) continue;
       slots.push({
         scheduleId: schedule.id,
         teacherId: schedule.teacherId,
@@ -501,6 +512,7 @@ export function getTeacherComplianceInRange(params: {
   todayStr: string;
   reportIndex?: Map<string, ReportIndexEntry>;
   dueSlots?: DueExpectedSlot[];
+  holidayDates?: Set<string> | null;
 }): RangeComplianceCounts {
   const { teacherId, schedules, reports, startStr, endStr, todayStr } = params;
   const scheduleIds = new Set(schedules.map((s) => s.id));
@@ -509,7 +521,7 @@ export function getTeacherComplianceInRange(params: {
     params.reportIndex ?? indexReportsBySlotDateNormalized(activeReports, schedules);
   const dueSlots =
     params.dueSlots ??
-    computeDueExpectedSlots(schedules, startStr, endStr, todayStr);
+    computeDueExpectedSlots(schedules, startStr, endStr, todayStr, params.holidayDates);
 
   const stats = emptyComplianceCounts();
   for (const slot of dueSlots) {
@@ -544,12 +556,19 @@ export function buildDashboardAnalytics(params: {
   startStr: string;
   endStr: string;
   todayStr: string;
+  holidayDates?: Set<string> | null;
 }): DashboardAnalytics {
   const { schedules, reports, teacherIds, startStr, endStr, todayStr } = params;
   const scheduleIds = new Set(schedules.map((s) => s.id));
   const activeReports = filterReportsForActiveSchedules(reports, scheduleIds);
   const reportIndex = indexReportsBySlotDateNormalized(activeReports, schedules);
-  const dueSlots = computeDueExpectedSlots(schedules, startStr, endStr, todayStr);
+  const dueSlots = computeDueExpectedSlots(
+    schedules,
+    startStr,
+    endStr,
+    todayStr,
+    params.holidayDates,
+  );
 
   const teacherCompliance = new Map<string, RangeComplianceCounts>();
   for (const teacherId of teacherIds) {
@@ -632,6 +651,7 @@ export function getWeeklyTrend(params: {
   startStr: string;
   endStr: string;
   todayStr: string;
+  holidayDates?: Set<string> | null;
 }): WeeklyTrendPoint[] {
   const { schedules, startStr, endStr, todayStr } = params;
   const reportIndex =
@@ -644,7 +664,8 @@ export function getWeeklyTrend(params: {
       schedules,
     );
   const dueSlots =
-    params.dueSlots ?? computeDueExpectedSlots(schedules, startStr, endStr, todayStr);
+    params.dueSlots ??
+    computeDueExpectedSlots(schedules, startStr, endStr, todayStr, params.holidayDates);
   const weekStarts = enumerateWeekStartsBetween(startStr, endStr);
 
   return weekStarts.map((weekStart) => {
@@ -699,6 +720,7 @@ export function getDayOfWeekStats(params: {
   startStr?: string;
   endStr?: string;
   todayStr?: string;
+  holidayDates?: Set<string> | null;
 }): DayOfWeekStat[] {
   const reportIndex = params.reportIndex ?? indexReportsBySlotDate(params.reports ?? []);
   const dueSlots =
@@ -708,6 +730,7 @@ export function getDayOfWeekStats(params: {
       params.startStr ?? '1970-01-01',
       params.endStr ?? '2099-12-31',
       params.todayStr ?? '2099-12-31',
+      params.holidayDates,
     );
 
   const acc: Record<number, { expected: number; reported: number }> = {};

@@ -6,6 +6,10 @@ import { EMAIL_SUBJECT, renderReminderEmail } from './email-template.js';
 import { getAdminDb } from './firebase-admin.js';
 import { resolveMailFrom, sendMail } from './mailer.js';
 import {
+  buildHolidayDateSet,
+  normalizeHolidayPeriods,
+} from '../../src/lib/holidays.js';
+import {
   formatDateInTZ,
   getMissingLessonsForTeacherThisWeek,
   getWeekKey,
@@ -72,6 +76,7 @@ export async function runEmailReminders(
   const settingsSnap = await settingsRef.get();
   const settings = settingsSnap.exists ? (settingsSnap.data() as Record<string, unknown>) : {};
   const reminderCfg: EmailReminderSettings = (settings.emailReminders as EmailReminderSettings) || {};
+  const holidayDates = buildHolidayDateSet(normalizeHolidayPeriods(settings.holidays));
 
   const globalEnabled = reminderCfg.enabled !== false;
   const minMissing = Math.max(
@@ -156,6 +161,7 @@ export async function runEmailReminders(
       reports,
       now,
       timeZone: ISRAEL_TIMEZONE,
+      holidayDates,
     });
 
     if (missing.length < minMissing) {

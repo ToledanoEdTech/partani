@@ -27,7 +27,7 @@ import {
   addStudent, updateStudent, deleteStudent,
   subscribeToAdminMembership, subscribeToAdmins, addAdmin, deleteAdmin, batchUpdateStudents,
 } from './lib/db';
-import { Teacher, Schedule, Report, EmailReminderSettings, Student, LessonType, AppSettings, AdminUser } from './types';
+import { Teacher, Schedule, Report, EmailReminderSettings, Student, LessonType, AppSettings, AdminUser, HolidayPeriod } from './types';
 import StudentPicker from './components/StudentPicker';
 import StudentCard from './components/StudentCard';
 import {
@@ -61,6 +61,14 @@ import {
   getMissingLessonsForTeacherThisWeek,
   getWeekStartDateStr,
 } from './lib/lesson-stats';
+import {
+  buildHolidayDateSet,
+  findHolidayForDate,
+  formatHolidayRangeLabel,
+  mergeHolidayPeriods,
+  normalizeHolidayPeriod,
+  normalizeHolidayPeriods,
+} from './lib/holidays';
 import {
   findReportForLessonDate,
   findReportForScheduleWeek,
@@ -106,6 +114,10 @@ const App = () => {
   const [reports, setReports] = useState<Report[]>([]);
   const [settings, setSettings] = useState<AppSettings>({});
   const [newCustomSubject, setNewCustomSubject] = useState('');
+  const [newHolidayStart, setNewHolidayStart] = useState('');
+  const [newHolidayEnd, setNewHolidayEnd] = useState('');
+  const [newHolidayName, setNewHolidayName] = useState('');
+  const [importingHolidays, setImportingHolidays] = useState(false);
   const [showAddSubjectInput, setShowAddSubjectInput] = useState(false);
   const [isListedAdmin, setIsListedAdmin] = useState(false);
   const [adminCheckDone, setAdminCheckDone] = useState(false);
@@ -631,6 +643,12 @@ const App = () => {
     [emailRemindersCfg.lastRunAt],
   );
 
+  const holidays = useMemo(
+    () => normalizeHolidayPeriods(settings.holidays),
+    [settings.holidays],
+  );
+  const holidayDates = useMemo(() => buildHolidayDateSet(holidays), [holidays]);
+
   const scheduleSubjectOptions = useMemo(
     () => mergeScheduleSubjects(settings.scheduleSubjects),
     [settings.scheduleSubjects],
@@ -682,6 +700,118 @@ const App = () => {
       emailReminders: { ...emailRemindersCfg, minMissingLessons: sanitized },
     });
     triggerNotification(`סף מינימלי לשליחת תזכורת עודכן ל-${sanitized} שיעורים`);
+  };
+
+  const persistHolidays = async (next: HolidayPeriod[]) => {
+    await updateSettings({ holidays: next });
+  };
+
+  const handleAddHoliday = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const normalized = normalizeHolidayPeriod({
+      startDate: newHolidayStart,
+      endDate: newHolidayEnd || newHolidayStart,
+      name: newHolidayName,
+    });
+    if (!normalized) {
+      triggerNotification('נא להזין תאריך חופשה תקין', 'error');
+      return;
+    }
+    const next = mergeHolidayPeriods(holidays, [normalized]);
+    if (next.length === holidays.length) {
+      triggerNotification('טווח החופשה כבר קיים ברשימה', 'error');
+      return;
+    }
+    try {
+      await persistHolidays(next);
+      setNewHolidayStart('');
+      setNewHolidayEnd('');
+      setNewHolidayName('');
+      triggerNotification('ימי החופשה נוספו — שיעורים בתאריכים אלה מבוטלים');
+    } catch (err) {
+      triggerNotification(getFirestoreUserMessage(err, 'שגיאה בשמירת חופשה'), 'error');
+    }
+  };
+
+  const handleRemoveHoliday = async (index: number) => {
+    const next = holidays.filter((_, i) => i !== index);
+    try {
+      await persistHolidays(next);
+      triggerNotification('ימי החופשה הוסרו');
+    } catch (err) {
+      triggerNotification(getFirestoreUserMessage(err, 'שגיאה במחיקת חופשה'), 'error');
+    }
+  };
+
+  const handleDownloadHolidaysTemplate = () => {
+    const ws = XLSX.utils.aoa_to_sheet([
+      ['תאריך התחלה', 'תאריך סיום', 'שם'],
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'חופשות');
+    XLSX.writeFile(wb, 'תבנית_יבוא_חופשות.xlsx');
+  };
+
+  const handleHolidaysExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportingHolidays(true);
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const data = new Uint8Array(event.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+
+        const incoming: HolidayPeriod[] = [];
+        for (const row of rows) {
+          const start =
+            row['תאריך התחלה'] ??
+            row['תאריך'] ??
+            row['Start'] ??
+            row['startDate'] ??
+            row['Date'] ??
+            row['date'];
+          const end =
+            row['תאריך סיום'] ??
+            row['עד תאריך'] ??
+            row['End'] ??
+            row['endDate'] ??
+            start;
+          const name = row['שם'] ?? row['Name'] ?? row['name'] ?? row['תיאור'];
+          const normalized = normalizeHolidayPeriod({ startDate: start, endDate: end, name });
+          if (normalized) incoming.push(normalized);
+        }
+
+        if (incoming.length === 0) {
+          triggerNotification('לא נמצאו תאריכי חופשה תקינים בקובץ', 'error');
+          return;
+        }
+
+        const before = holidays.length;
+        const next = mergeHolidayPeriods(holidays, incoming);
+        const added = next.length - before;
+        await persistHolidays(next);
+        triggerNotification(
+          added > 0
+            ? `יובאו ${added} טווחי חופשה (מתוך ${incoming.length} שורות תקינות)`
+            : `כל ${incoming.length} הטווחים כבר היו ברשימה`,
+        );
+      } catch (err) {
+        triggerNotification(getFirestoreUserMessage(err, 'שגיאה בייבוא חופשות'), 'error');
+      } finally {
+        setImportingHolidays(false);
+        if (e.target) e.target.value = '';
+      }
+    };
+    reader.onerror = () => {
+      setImportingHolidays(false);
+      triggerNotification('שגיאה בקריאת הקובץ', 'error');
+      if (e.target) e.target.value = '';
+    };
+    reader.readAsArrayBuffer(file);
   };
 
   const handleSendRemindersNow = async () => {
@@ -756,13 +886,14 @@ const App = () => {
         schedules: schedule,
         reports,
         timeZone: ISRAEL_TIMEZONE,
+        holidayDates,
       });
       if (missing.length >= remindersMinMissing) {
         out.push({ teacher: t, missingCount: missing.length });
       }
     }
     return out.sort((a, b) => b.missingCount - a.missingCount);
-  }, [isAdmin, teachers, schedule, reports, remindersMinMissing]);
+  }, [isAdmin, teachers, schedule, reports, remindersMinMissing, holidayDates]);
 
   
   const handleEditTeacherSubmit = async (e: React.FormEvent) => {
@@ -1041,6 +1172,10 @@ const App = () => {
       return;
     }
     const lessonDate = resolved.lessonDate;
+    if (holidayDates.has(lessonDate)) {
+      triggerNotification('לא ניתן לדווח על שיעור ביום חופשה — השיעור מבוטל', 'error');
+      return;
+    }
     const textToSave =
       reportText.trim() ||
       (reportStatus === 'completed' ? 'השיעור התקיים' : '');
@@ -1201,8 +1336,9 @@ const App = () => {
         startStr: statsRange.startStr,
         endStr: statsRange.endStr,
         todayStr,
+        holidayDates,
       }),
-    [schedule, reports, teachers, statsRange.startStr, statsRange.endStr, todayStr],
+    [schedule, reports, teachers, statsRange.startStr, statsRange.endStr, todayStr, holidayDates],
   );
 
   const teacherCompliance = useMemo(
@@ -1432,10 +1568,11 @@ const App = () => {
           teacherId: t.id,
           schedules: schedule,
           reports,
+          holidayDates,
         }).length
       );
     }, 0);
-  }, [activeTeachers, schedule, reports]);
+  }, [activeTeachers, schedule, reports, holidayDates]);
 
   const adminNavIcons: Record<string, React.ReactNode> = {
     overview: <TrendingUp className="w-4 h-4 shrink-0" />,
@@ -1694,6 +1831,7 @@ const App = () => {
             schedules={teacherSchedules}
             reports={teacherReports}
             students={students}
+            holidays={holidays}
             teacherTab={teacherTab}
             setTeacherTab={setTeacherTab}
             isImpersonating={isImpersonating}
@@ -2028,6 +2166,133 @@ const App = () => {
                           </div>
                         </>
                       )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Holidays / cancelled lesson days */}
+                <div className="bg-white rounded-lg p-4 sm:p-6 shadow-sm border border-gray-100">
+                  <div className="flex flex-col sm:flex-row items-start justify-between gap-4 mb-6 border-b pb-4">
+                    <div className="min-w-0">
+                      <h3 className="text-lg sm:text-xl font-bold text-gray-900 flex items-center gap-2">
+                        <Calendar className="w-5 h-5 text-blue-600 shrink-0" />
+                        ימי חופשה וביטול שיעורים
+                      </h3>
+                      <p className="text-sm text-gray-500 mt-1">
+                        בתאריכים אלה השיעורים מבוטלים: לא נספרים כחסרים בתזכורות מייל ולא בסטטיסטיקות דיווח.
+                        ניתן להוסיף ידנית או לייבא מקובץ Excel.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={handleDownloadHolidaysTemplate}
+                        className="px-3 py-2 bg-gray-100 border border-gray-300 hover:bg-gray-200 text-gray-700 font-bold rounded text-sm flex items-center gap-1.5"
+                      >
+                        <Download className="w-4 h-4" />
+                        תבנית ריקה
+                      </button>
+                      <label className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded text-sm flex items-center gap-1.5 cursor-pointer">
+                        {importingHolidays ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Upload className="w-4 h-4" />
+                        )}
+                        {importingHolidays ? 'מייבא...' : 'ייבוא Excel'}
+                        <input
+                          type="file"
+                          accept=".xlsx,.xls,.csv"
+                          className="hidden"
+                          disabled={importingHolidays}
+                          onChange={(e) => void handleHolidaysExcelUpload(e)}
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <form onSubmit={(e) => void handleAddHoliday(e)} className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 mb-1">מתאריך</label>
+                      <input
+                        type="date"
+                        required
+                        value={newHolidayStart}
+                        onChange={(e) => setNewHolidayStart(e.target.value)}
+                        className="w-full p-2 border rounded-lg bg-white text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 mb-1">עד תאריך (אופציונלי)</label>
+                      <input
+                        type="date"
+                        value={newHolidayEnd}
+                        min={newHolidayStart || undefined}
+                        onChange={(e) => setNewHolidayEnd(e.target.value)}
+                        className="w-full p-2 border rounded-lg bg-white text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 mb-1">שם (אופציונלי)</label>
+                      <input
+                        type="text"
+                        placeholder="למשל חופשת פסח"
+                        value={newHolidayName}
+                        onChange={(e) => setNewHolidayName(e.target.value)}
+                        className="w-full p-2 border rounded-lg bg-white text-sm"
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <button
+                        type="submit"
+                        className="press w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-bold hover:bg-blue-700"
+                      >
+                        <Plus className="w-4 h-4" />
+                        הוסף
+                      </button>
+                    </div>
+                  </form>
+
+                  <p className="text-xs text-gray-500 mb-3">
+                    בעמודות הקובץ: <span className="font-mono">תאריך התחלה</span>,{' '}
+                    <span className="font-mono">תאריך סיום</span> (אופציונלי ליום בודד),{' '}
+                    <span className="font-mono">שם</span>. פורמט מומלץ: YYYY-MM-DD או DD/MM/YYYY.
+                  </p>
+
+                  {holidays.length === 0 ? (
+                    <p className="text-sm text-gray-500 bg-gray-50 border border-gray-100 rounded-lg p-4">
+                      עדיין לא הוגדרו ימי חופשה. הוסיפו תאריכים ידנית או ייבאו מקובץ.
+                    </p>
+                  ) : (
+                    <div className="border rounded-lg overflow-hidden">
+                      <table className="w-full text-right text-sm">
+                        <thead className="bg-gray-50 text-xs text-gray-500">
+                          <tr>
+                            <th className="px-3 py-2 font-bold">תאריכים</th>
+                            <th className="px-3 py-2 font-bold">שם</th>
+                            <th className="px-3 py-2 font-bold w-16" />
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y">
+                          {holidays.map((h, index) => (
+                            <tr key={`${h.startDate}-${h.endDate}-${h.name || ''}-${index}`} className="hover:bg-gray-50/80">
+                              <td className="px-3 py-2 font-mono text-xs sm:text-sm text-gray-800 whitespace-nowrap">
+                                {formatHolidayRangeLabel(h)}
+                              </td>
+                              <td className="px-3 py-2 text-gray-700">{h.name || '—'}</td>
+                              <td className="px-3 py-2 text-left">
+                                <button
+                                  type="button"
+                                  onClick={() => void handleRemoveHoliday(index)}
+                                  className="press p-1.5 text-red-600 hover:bg-red-50 rounded"
+                                  title="מחק"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   )}
                 </div>
@@ -2863,8 +3128,11 @@ const App = () => {
                                 {classSchedules.map(s => {
                                   const teacher = teachers.find(t => t.id === s.teacherId);
                                   const weeklyReport = findReportForScheduleWeek(reports, s, weekStartStr);
+                                  const holiday = findHolidayForDate(cellDateStr, holidays);
                                   let statusBadge = <span className="inline-flex items-center gap-1 text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">לא דווח</span>;
-                                  if (weeklyReport) {
+                                  if (holiday) {
+                                    statusBadge = <span className="inline-flex items-center gap-1 text-[10px] bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded">חופשה{holiday.name ? ` — ${holiday.name}` : ''}</span>;
+                                  } else if (weeklyReport) {
                                     if (weeklyReport.status === 'completed') {
                                       statusBadge = <span className="inline-flex items-center gap-1 text-[10px] bg-green-100 text-green-800 px-1.5 py-0.5 rounded"><CheckCircle className="w-3 h-3 shrink-0"/> בוצע</span>;
                                     } else {
@@ -2872,13 +3140,13 @@ const App = () => {
                                     }
                                   }
                                   return (
-                                    <div key={s.id} className={`text-sm border rounded-lg p-2.5 ${weeklyReport ? (weeklyReport.status === 'completed' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200') : 'bg-gray-50 border-gray-200'}`}>
+                                    <div key={s.id} className={`text-sm border rounded-lg p-2.5 ${holiday ? 'bg-amber-50 border-amber-200' : weeklyReport ? (weeklyReport.status === 'completed' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200') : 'bg-gray-50 border-gray-200'}`}>
                                       <div className="font-bold text-blue-800 break-words">{teacher?.name || 'לא ידוע'}</div>
                                       <div className="text-gray-700 font-semibold text-xs break-words">{getScheduleDisplayLabel(s, students)}</div>
                                       <div className="text-gray-500 text-xs">{s.subject}</div>
                                       <div className="mt-2 flex justify-between items-center gap-2">
                                         {statusBadge}
-                                        {!weeklyReport && (
+                                        {!weeklyReport && !holiday && (
                                           <button onClick={() => openAdminReport(s, cellDateStr)} className="press text-blue-600 hover:bg-blue-100 px-2 py-1 rounded transition text-xs font-bold flex items-center gap-1" title="דווח שיעור עבור תאריך זה"><ClipboardCheck className="w-3.5 h-3.5"/> דווח</button>
                                         )}
                                       </div>
@@ -2931,9 +3199,12 @@ const App = () => {
                                       {classSchedules.map(s => {
                                         const teacher = teachers.find(t => t.id === s.teacherId);
                                         const weeklyReport = findReportForScheduleWeek(reports, s, weekStartStr);
-                                        
+                                        const holiday = findHolidayForDate(cellDateStr, holidays);
+
                                         let statusBadge = <span className="inline-flex items-center gap-1 text-[10px] bg-gray-100 text-gray-500 px-1 py-0.5 rounded break-all">לא דווח</span>;
-                                        if (weeklyReport) {
+                                        if (holiday) {
+                                          statusBadge = <span className="inline-flex items-center gap-1 text-[10px] bg-amber-100 text-amber-900 px-1 py-0.5 rounded break-all">חופשה{holiday.name ? ` — ${holiday.name}` : ''}</span>;
+                                        } else if (weeklyReport) {
                                           if (weeklyReport.status === 'completed') {
                                             statusBadge = <span className="inline-flex items-center gap-1 text-[10px] bg-green-100 text-green-800 px-1 py-0.5 rounded break-all"><CheckCircle className="w-3 h-3 shrink-0"/> בוצע</span>;
                                           } else {
@@ -2942,13 +3213,13 @@ const App = () => {
                                         }
 
                                         return (
-                                          <div key={s.id} className={`text-xs border rounded p-1.5 shadow-sm ${weeklyReport ? (weeklyReport.status === 'completed' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200') : 'bg-gray-50 border-gray-200'}`}>
+                                          <div key={s.id} className={`text-xs border rounded p-1.5 shadow-sm ${holiday ? 'bg-amber-50 border-amber-200' : weeklyReport ? (weeklyReport.status === 'completed' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200') : 'bg-gray-50 border-gray-200'}`}>
                                             <div className="font-bold text-blue-800">{teacher?.name || 'לא ידוע'}</div>
                                             <div className="text-gray-700 font-semibold">{getScheduleDisplayLabel(s, students)}</div>
                                             <div className="text-gray-500">{s.subject}</div>
                                             <div className="mt-1 flex justify-between items-center">
                                               {statusBadge}
-                                              {!weeklyReport && (
+                                              {!weeklyReport && !holiday && (
                                                 <button onClick={() => openAdminReport(s, cellDateStr)} className="press text-blue-600 hover:bg-blue-100 px-1.5 py-1 rounded transition text-xs font-bold flex items-center gap-1" title="דווח שיעור"><ClipboardCheck className="w-3.5 h-3.5"/><span className="hidden xl:inline">דווח</span></button>
                                               )}
                                             </div>

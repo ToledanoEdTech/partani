@@ -3,7 +3,7 @@ import {
   BookOpen, Calendar, CheckCircle, XCircle, FileText, Loader2, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Teacher, Schedule, Report, Student } from '../types';
+import { Teacher, Schedule, Report, Student, HolidayPeriod } from '../types';
 import StudentPicker from './StudentPicker';
 import Modal from './Modal';
 import { addReport, updateReport } from '../lib/db';
@@ -12,6 +12,11 @@ import {
   getReportAttendedLabel,
   getScheduleDisplayLabel,
 } from '../lib/students';
+import {
+  buildHolidayDateSet,
+  findHolidayForDate,
+  isHolidayDate,
+} from '../lib/holidays';
 import {
   addDaysToDateStr,
   calendarDateStr,
@@ -46,11 +51,13 @@ const MiniCalendar = ({
   reports,
   selectedDateStr,
   onDateSelect,
+  holidayDates,
 }: {
   selectedSchedule: Schedule;
   reports: Report[];
   selectedDateStr: string;
   onDateSelect: (d: string) => void;
+  holidayDates: Set<string>;
 }) => {
   const [currentMonthDate, setCurrentMonthDate] = useState(new Date(selectedDateStr));
 
@@ -81,12 +88,15 @@ const MiniCalendar = ({
     const existingReport = isScheduleDay
       ? findReportForLessonDate(reports, selectedSchedule, dateStr)
       : undefined;
+    const onHoliday = isScheduleDay && isHolidayDate(dateStr, holidayDates);
 
     let baseClass =
       'press h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-150 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ';
 
     if (isSelected) baseClass += 'ring-2 ring-blue-500 ring-offset-1 ';
-    if (existingReport) {
+    if (onHoliday) {
+      baseClass += 'bg-amber-200 text-amber-950 hover:bg-amber-300';
+    } else if (existingReport) {
       baseClass +=
         existingReport.status === 'completed'
           ? 'bg-green-500 text-white hover:bg-green-600'
@@ -101,15 +111,23 @@ const MiniCalendar = ({
       <div key={d} className="flex flex-col items-center justify-center p-1 relative">
         <button
           type="button"
-          disabled={!isScheduleDay}
-          onClick={() => isScheduleDay && onDateSelect(dateStr)}
-          className={`${baseClass}${!isScheduleDay ? ' opacity-30 cursor-not-allowed hover:bg-transparent' : ''}`}
+          disabled={!isScheduleDay || onHoliday}
+          onClick={() => isScheduleDay && !onHoliday && onDateSelect(dateStr)}
+          className={`${baseClass}${
+            !isScheduleDay
+              ? ' opacity-30 cursor-not-allowed hover:bg-transparent'
+              : onHoliday
+                ? ' cursor-not-allowed'
+                : ''
+          }`}
           title={
-            existingReport
-              ? 'כבר דווח'
-              : isScheduleDay
-                ? 'יום שיעור — לחץ לבחירת תאריך'
-                : 'לא יום שיעור'
+            onHoliday
+              ? 'יום חופשה — השיעור מבוטל'
+              : existingReport
+                ? 'כבר דווח'
+                : isScheduleDay
+                  ? 'יום שיעור — לחץ לבחירת תאריך'
+                  : 'לא יום שיעור'
           }
         >
           {d}
@@ -135,9 +153,12 @@ const MiniCalendar = ({
         <div>א׳</div><div>ב׳</div><div>ג׳</div><div>ד׳</div><div>ה׳</div><div>ו׳</div><div>ש׳</div>
       </div>
       <div className="grid grid-cols-7">{daysRender}</div>
-      <div className="mt-3 text-[10px] flex justify-center gap-3 text-gray-500">
+      <div className="mt-3 text-[10px] flex justify-center gap-3 text-gray-500 flex-wrap">
         <div className="flex items-center gap-1">
           <div className="w-2 h-2 rounded-full bg-blue-100 border border-blue-200" /> שיעור
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-2 h-2 rounded-full bg-amber-300" /> חופשה
         </div>
         <div className="flex items-center gap-1">
           <div className="w-2 h-2 rounded-full bg-green-500" /> בוצע
@@ -155,6 +176,7 @@ export interface TeacherDashboardProps {
   schedules: Schedule[];
   reports: Report[];
   students: Student[];
+  holidays?: HolidayPeriod[];
   teacherTab: 'overview' | 'history';
   setTeacherTab: (tab: 'overview' | 'history') => void;
   isImpersonating?: boolean;
@@ -167,6 +189,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   schedules,
   reports,
   students,
+  holidays = [],
   teacherTab,
   setTeacherTab,
   isImpersonating,
@@ -202,21 +225,27 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     return sched.studentIds || [];
   };
 
+  const holidayDates = useMemo(() => buildHolidayDateSet(holidays), [holidays]);
+
   const weekSlots = useMemo(() => {
     const items = schedules.map((slot) => {
       const date = getLessonDateForScheduleInWeek(slot, weekStartStr);
       const report = findReportForScheduleWeek(reports, slot, weekStartStr);
-      return { slot, date, report };
+      const holiday = findHolidayForDate(date, holidays);
+      return { slot, date, report, holiday };
     });
     items.sort((a, b) => {
-      if (!!a.report !== !!b.report) return a.report ? 1 : -1;
+      const aDone = Boolean(a.report || a.holiday);
+      const bDone = Boolean(b.report || b.holiday);
+      if (aDone !== bDone) return aDone ? 1 : -1;
       return a.date.localeCompare(b.date) || a.slot.hour.localeCompare(b.slot.hour, undefined, { numeric: true });
     });
     return items;
-  }, [schedules, reports, weekStartStr]);
+  }, [schedules, reports, weekStartStr, holidays]);
 
-  const pendingCount = weekSlots.filter((s) => !s.report).length;
+  const pendingCount = weekSlots.filter((s) => !s.report && !s.holiday).length;
   const doneCount = weekSlots.filter((s) => s.report).length;
+  const holidayCount = weekSlots.filter((s) => s.holiday && !s.report).length;
 
   const filteredHistory = useMemo(() => {
     const sorted = [...reports].sort((a, b) => (b.timestamp || b.date).localeCompare(a.timestamp || a.date));
@@ -287,6 +316,10 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       return;
     }
     const lessonDate = resolved.lessonDate;
+    if (isHolidayDate(lessonDate, holidayDates)) {
+      onNotify('לא ניתן לדווח על שיעור ביום חופשה — השיעור מבוטל', 'error');
+      return;
+    }
     const textToSave =
       reportText.trim() ||
       (reportStatus === 'completed' ? 'השיעור התקיים' : '');
@@ -456,11 +489,16 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     {doneCount > 0 && (
                       <span className="font-normal text-amber-800/80"> · {doneCount} כבר דווחו</span>
                     )}
+                    {holidayCount > 0 && (
+                      <span className="font-normal text-amber-800/80"> · {holidayCount} בחופשה</span>
+                    )}
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-2">
                     <CheckCircle className="w-4 h-4" />
-                    כל השיעורים דווחו בשבוע זה
+                    {holidayCount > 0 && doneCount === 0
+                      ? 'אין שיעורים לדיווח בשבוע זה (ימי חופשה)'
+                      : 'כל השיעורים דווחו בשבוע זה'}
                   </span>
                 )}
               </div>
@@ -474,17 +512,19 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               </div>
             ) : (
               <div className="space-y-3">
-                {weekSlots.map(({ slot, date, report }) => {
-                  const isPending = !report;
+                {weekSlots.map(({ slot, date, report, holiday }) => {
+                  const isPending = !report && !holiday;
                   return (
                     <div
                       key={slot.id}
                       className={`bg-white rounded-xl border p-4 shadow-sm transition-shadow ${
-                        isPending
-                          ? 'border-blue-200 ring-1 ring-blue-50'
-                          : report.status === 'completed'
-                            ? 'border-green-100'
-                            : 'border-red-100'
+                        holiday
+                          ? 'border-amber-200 bg-amber-50/40'
+                          : isPending
+                            ? 'border-blue-200 ring-1 ring-blue-50'
+                            : report?.status === 'completed'
+                              ? 'border-green-100'
+                              : 'border-red-100'
                       }`}
                     >
                       <div className="flex flex-col gap-3">
@@ -515,7 +555,12 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         </div>
 
                         <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-                          {report ? (
+                          {holiday && !report ? (
+                            <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-900">
+                              <Calendar className="w-4 h-4" />
+                              מבוטל — חופשה{holiday.name ? ` (${holiday.name})` : ''}
+                            </span>
+                          ) : report ? (
                             <>
                               <span
                                 className={`inline-flex items-center gap-1.5 text-xs font-bold ${
@@ -715,6 +760,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     selectedSchedule={selectedSchedule}
                     reports={reports}
                     selectedDateStr={reportDate}
+                    holidayDates={holidayDates}
                     onDateSelect={(d) => {
                       setReportDate(d);
                       const existing = findReportForLessonDate(reports, selectedSchedule, d);
