@@ -20,6 +20,7 @@ import {
 import {
   addDaysToDateStr,
   calendarDateStr,
+  DAY_MAP,
   getDayOfWeekForDateStr,
   getWeekStartDateStr,
 } from '../lib/lesson-stats';
@@ -32,6 +33,7 @@ import {
 import {
   formatHebrewDateLong,
   formatHebrewDateShort,
+  formatHebrewMonthLabel,
   formatHourSlot,
   formatWeekRangeLabel,
 } from '../lib/date-format';
@@ -45,6 +47,31 @@ const dayMapReverse: Record<string, number> = {
 const MISS_REASON_PRESETS = ['תלמיד לא הגיע', 'חג / חופשה', 'מחלה', 'ביטול מנהלי'] as const;
 
 const weekAnchorDate = (dateStr: string) => new Date(`${dateStr}T12:00:00`);
+
+type SlotItem = {
+  slot: Schedule;
+  date: string;
+  report?: Report;
+  holiday?: HolidayPeriod;
+};
+
+type DayCellStatus = 'empty' | 'holiday' | 'pending' | 'done' | 'missed' | 'mixed';
+
+function dayCellStatus(items: SlotItem[]): DayCellStatus {
+  if (items.length === 0) return 'empty';
+  const actionable = items.filter((i) => !i.holiday || i.report);
+  const onlyHoliday = items.every((i) => i.holiday && !i.report);
+  if (onlyHoliday) return 'holiday';
+  const pending = actionable.filter((i) => !i.report && !i.holiday);
+  if (pending.length > 0) return 'pending';
+  const reports = actionable.filter((i) => i.report);
+  if (reports.length === 0) return 'holiday';
+  const allCompleted = reports.every((i) => i.report!.status === 'completed');
+  const allMissed = reports.every((i) => i.report!.status === 'missed');
+  if (allCompleted) return 'done';
+  if (allMissed) return 'missed';
+  return 'mixed';
+}
 
 const MiniCalendar = ({
   selectedSchedule,
@@ -69,10 +96,6 @@ const MiniCalendar = ({
   const month = currentMonthDate.getMonth();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const firstDayOfMonth = new Date(year, month, 1).getDay();
-  const monthNames = [
-    'ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני',
-    'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר',
-  ];
 
   const daysRender: React.ReactNode[] = [];
   for (let i = 0; i < firstDayOfMonth; i++) {
@@ -143,7 +166,7 @@ const MiniCalendar = ({
           <ChevronRight className="w-4 h-4" />
         </button>
         <span>
-          {monthNames[month]} {year}
+          {formatHebrewMonthLabel(year, month)}
         </span>
         <button type="button" onClick={() => setCurrentMonthDate(new Date(year, month + 1, 1))} className="px-3 py-1 hover:bg-white rounded-lg">
           <ChevronLeft className="w-4 h-4" />
@@ -162,6 +185,161 @@ const MiniCalendar = ({
         </div>
         <div className="flex items-center gap-1">
           <div className="w-2 h-2 rounded-full bg-green-500" /> בוצע
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-2 h-2 rounded-full bg-red-500" /> בוטל
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const MonthReportCalendar = ({
+  year,
+  month,
+  schedules,
+  reports,
+  holidays,
+  selectedDateStr,
+  onSelectDay,
+  onPrevMonth,
+  onNextMonth,
+}: {
+  year: number;
+  month: number;
+  schedules: Schedule[];
+  reports: Report[];
+  holidays: HolidayPeriod[];
+  selectedDateStr: string | null;
+  onSelectDay: (dateStr: string) => void;
+  onPrevMonth: () => void;
+  onNextMonth: () => void;
+}) => {
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDayOfMonth = new Date(year, month, 1).getDay();
+  const todayStr = calendarDateStr(
+    new Date().getFullYear(),
+    new Date().getMonth(),
+    new Date().getDate(),
+  );
+
+  const cells: React.ReactNode[] = [];
+  for (let i = 0; i < firstDayOfMonth; i++) {
+    cells.push(<div key={`empty-${i}`} className="aspect-square" />);
+  }
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = calendarDateStr(year, month, d);
+    const dow = getDayOfWeekForDateStr(dateStr);
+    const items: SlotItem[] = schedules
+      .filter((slot) => DAY_MAP[slot.day] === dow)
+      .map((slot) => ({
+        slot,
+        date: dateStr,
+        report: findReportForLessonDate(reports, slot, dateStr),
+        holiday: findHolidayForDate(dateStr, holidays),
+      }));
+    const status = dayCellStatus(items);
+    const hasLessons = items.length > 0;
+    const isSelected = selectedDateStr === dateStr;
+    const isToday = dateStr === todayStr;
+
+    let dayClass =
+      'press relative w-full aspect-square rounded-xl flex flex-col items-center justify-center text-sm font-bold transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ';
+
+    if (isSelected) dayClass += 'ring-2 ring-blue-500 ring-offset-1 ';
+    if (isToday && !isSelected) dayClass += 'ring-1 ring-slate-300 ';
+
+    switch (status) {
+      case 'pending':
+        dayClass += 'bg-blue-100 text-blue-900 hover:bg-blue-200';
+        break;
+      case 'done':
+        dayClass += 'bg-green-500 text-white hover:bg-green-600';
+        break;
+      case 'missed':
+        dayClass += 'bg-red-500 text-white hover:bg-red-600';
+        break;
+      case 'mixed':
+        dayClass += 'bg-emerald-100 text-emerald-900 hover:bg-emerald-200';
+        break;
+      case 'holiday':
+        dayClass += 'bg-amber-200 text-amber-950 hover:bg-amber-300';
+        break;
+      default:
+        dayClass += hasLessons
+          ? 'bg-blue-50 text-blue-800 hover:bg-blue-100'
+          : 'text-gray-400 hover:bg-gray-50';
+    }
+
+    const pendingCount = items.filter((i) => !i.report && !i.holiday).length;
+
+    cells.push(
+      <button
+        key={d}
+        type="button"
+        onClick={() => onSelectDay(dateStr)}
+        className={dayClass}
+        title={
+          !hasLessons
+            ? 'אין שיעורים'
+            : status === 'holiday'
+              ? 'יום חופשה'
+              : status === 'pending'
+                ? `${pendingCount} לדיווח`
+                : status === 'done'
+                  ? 'דווח'
+                  : status === 'missed'
+                    ? 'בוטל'
+                    : 'שיעורים'
+        }
+      >
+        <span>{d}</span>
+        {hasLessons && (
+          <span
+            className={`mt-0.5 h-1 w-1 rounded-full ${
+              status === 'done' || status === 'missed' ? 'bg-white/80' : 'bg-current opacity-60'
+            }`}
+          />
+        )}
+      </button>,
+    );
+  }
+
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-3 sm:p-4 select-none shadow-sm">
+      <div className="flex justify-between items-center mb-3 text-sm font-bold text-gray-900">
+        <button
+          type="button"
+          onClick={onPrevMonth}
+          className="press p-2 hover:bg-gray-50 rounded-lg"
+          aria-label="חודש קודם"
+        >
+          <ChevronRight className="w-5 h-5" />
+        </button>
+        <span>{formatHebrewMonthLabel(year, month)}</span>
+        <button
+          type="button"
+          onClick={onNextMonth}
+          className="press p-2 hover:bg-gray-50 rounded-lg"
+          aria-label="חודש הבא"
+        >
+          <ChevronLeft className="w-5 h-5" />
+        </button>
+      </div>
+      <div className="grid grid-cols-7 text-center text-[10px] font-bold text-gray-400 mb-1">
+        <div>א׳</div><div>ב׳</div><div>ג׳</div><div>ד׳</div><div>ה׳</div><div>ו׳</div><div>ש׳</div>
+      </div>
+      <div className="grid grid-cols-7 gap-1">{cells}</div>
+      <div className="mt-3 text-[10px] flex justify-center gap-3 text-gray-500 flex-wrap">
+        <div className="flex items-center gap-1">
+          <div className="w-2 h-2 rounded-full bg-blue-100 border border-blue-200" /> לדיווח
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-2 h-2 rounded-full bg-amber-300" /> חופשה
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-2 h-2 rounded-full bg-green-500" /> דווח
         </div>
         <div className="flex items-center gap-1">
           <div className="w-2 h-2 rounded-full bg-red-500" /> בוטל
@@ -199,6 +377,14 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [weekStart, setWeekStart] = useState<Date>(() =>
     weekAnchorDate(getWeekStartDateStr(new Date())),
   );
+  const [reportViewMode, setReportViewMode] = useState<'week' | 'month'>('week');
+  const [monthCursor, setMonthCursor] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
+  const [selectedMonthDay, setSelectedMonthDay] = useState<string | null>(() =>
+    calendarDateStr(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()),
+  );
   const [selectedSchedule, setSelectedSchedule] = useState<Schedule | null>(null);
   const [editingReport, setEditingReport] = useState<Report | null>(null);
   const [reportStatus, setReportStatus] = useState<'completed' | 'missed'>('completed');
@@ -211,6 +397,8 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
   const weekStartStr = getWeekStartDateStr(weekStart);
   const isCurrentWeek = weekStartStr === getWeekStartDateStr(new Date());
+  const monthYear = monthCursor.getFullYear();
+  const monthIndex = monthCursor.getMonth();
 
   const isFlexibleAttendance = (sched: Schedule): boolean =>
     sched.lessonType === 'flexible' || !(sched.studentIds && sched.studentIds.length > 0);
@@ -243,15 +431,56 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     return items;
   }, [schedules, reports, weekStartStr, holidays]);
 
+  const monthDaySlots = useMemo(() => {
+    if (!selectedMonthDay) return [];
+    const dow = getDayOfWeekForDateStr(selectedMonthDay);
+    const items: SlotItem[] = schedules
+      .filter((slot) => DAY_MAP[slot.day] === dow)
+      .map((slot) => ({
+        slot,
+        date: selectedMonthDay,
+        report: findReportForLessonDate(reports, slot, selectedMonthDay),
+        holiday: findHolidayForDate(selectedMonthDay, holidays),
+      }));
+    items.sort((a, b) => {
+      const aDone = Boolean(a.report || a.holiday);
+      const bDone = Boolean(b.report || b.holiday);
+      if (aDone !== bDone) return aDone ? 1 : -1;
+      return a.slot.hour.localeCompare(b.slot.hour, undefined, { numeric: true });
+    });
+    return items;
+  }, [selectedMonthDay, schedules, reports, holidays]);
+
   const pendingCount = weekSlots.filter((s) => !s.report && !s.holiday).length;
   const doneCount = weekSlots.filter((s) => s.report).length;
   const holidayCount = weekSlots.filter((s) => s.holiday && !s.report).length;
+
+  const monthDayPending = monthDaySlots.filter((s) => !s.report && !s.holiday).length;
+  const monthDayDone = monthDaySlots.filter((s) => s.report).length;
+  const monthDayHoliday = monthDaySlots.filter((s) => s.holiday && !s.report).length;
 
   const filteredHistory = useMemo(() => {
     const sorted = [...reports].sort((a, b) => (b.timestamp || b.date).localeCompare(a.timestamp || a.date));
     if (historyStatusFilter === 'all') return sorted;
     return sorted.filter((r) => r.status === historyStatusFilter);
   }, [reports, historyStatusFilter]);
+
+  const selectMonthDay = (dateStr: string) => {
+    setSelectedMonthDay(dateStr);
+    setWeekStart(weekAnchorDate(getWeekStartDateStr(weekAnchorDate(dateStr))));
+    const d = weekAnchorDate(dateStr);
+    setMonthCursor(new Date(d.getFullYear(), d.getMonth(), 1));
+  };
+
+  const switchToMonthView = () => {
+    setReportViewMode('month');
+    const anchor = weekStart;
+    setMonthCursor(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
+    if (!selectedMonthDay) {
+      const today = new Date();
+      setSelectedMonthDay(calendarDateStr(today.getFullYear(), today.getMonth(), today.getDate()));
+    }
+  };
 
   const closeReportForm = () => {
     setSelectedSchedule(null);
@@ -273,8 +502,10 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       setReportAttendedIds(existing.attendedStudentIds);
     } else {
       const expected = getExpectedStudentIds(slot);
-      const lastIds = getLastAttendedStudentIds(slot.id, reports);
-      if (slot.lessonType === 'flexible' && lastIds.length > 0) {
+      const lastIds = getLastAttendedStudentIds(slot.id, reports).filter((id) =>
+        students.some((s) => s.id === id && s.active),
+      );
+      if (isFlexibleAttendance(slot) && lastIds.length > 0) {
         setReportAttendedIds(lastIds);
       } else if (expected.length > 0) {
         setReportAttendedIds(expected);
@@ -360,6 +591,91 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     }
   };
 
+  const renderSlotCard = ({ slot, date, report, holiday }: SlotItem) => {
+    const isPending = !report && !holiday;
+    return (
+      <div
+        key={`${slot.id}-${date}`}
+        className={`bg-white rounded-xl border p-4 shadow-sm transition-shadow ${
+          holiday
+            ? 'border-amber-200 bg-amber-50/40'
+            : isPending
+              ? 'border-blue-200 ring-1 ring-blue-50'
+              : report?.status === 'completed'
+                ? 'border-green-100'
+                : 'border-red-100'
+        }`}
+      >
+        <div className="flex flex-col gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2 mb-1.5">
+              <span className="text-sm font-bold text-gray-900">
+                {formatHebrewDateLong(date, slot.day)}
+              </span>
+              <span className="text-xs font-bold text-blue-800 bg-blue-50 px-2 py-0.5 rounded-md">
+                {formatHourSlot(slot.hour)}
+              </span>
+              <span
+                className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                  slot.lessonType === 'flexible'
+                    ? 'bg-amber-100 text-amber-900'
+                    : 'bg-slate-100 text-slate-700'
+                }`}
+              >
+                {slot.lessonType === 'flexible' ? 'גמיש' : 'קבוע'}
+              </span>
+            </div>
+            <h4 className="font-bold text-gray-900 text-base break-words">
+              {slot.lessonType === 'flexible'
+                ? 'שיעור גמיש'
+                : getScheduleDisplayLabel(slot, students)}
+            </h4>
+            <p className="text-xs text-gray-500 mt-0.5">{slot.subject}</p>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+            {holiday && !report ? (
+              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-900">
+                <Calendar className="w-4 h-4" />
+                מבוטל — חופשה{holiday.name ? ` (${holiday.name})` : ''}
+              </span>
+            ) : report ? (
+              <>
+                <span
+                  className={`inline-flex items-center gap-1.5 text-xs font-bold ${
+                    report.status === 'completed' ? 'text-green-700' : 'text-red-600'
+                  }`}
+                >
+                  {report.status === 'completed' ? (
+                    <CheckCircle className="w-4 h-4" />
+                  ) : (
+                    <XCircle className="w-4 h-4" />
+                  )}
+                  {report.status === 'completed' ? 'דווח — התקיים' : 'דווח — בוטל'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => openReportForm(slot, date, report)}
+                  className="press sm:mr-auto px-4 py-2.5 rounded-lg text-sm font-bold bg-gray-100 text-gray-800 hover:bg-gray-200 w-full sm:w-auto"
+                >
+                  ערוך דיווח
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => openReportForm(slot, date)}
+                className="press w-full sm:w-auto sm:mr-auto px-5 py-3 rounded-xl text-sm font-bold bg-blue-600 text-white hover:bg-blue-700 shadow-sm"
+              >
+                דווח עכשיו
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const formOpen = !!selectedSchedule;
 
   return (
@@ -433,76 +749,78 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             transition={tabTransition}
             className="space-y-4"
           >
-            {/* Week nav */}
+            {/* Header + view toggle */}
             <div className="bg-slate-800 text-white rounded-xl p-3 sm:p-4 flex flex-col gap-3 shadow-sm">
               <div className="flex items-center gap-2">
                 <Calendar className="w-5 h-5 text-amber-400 shrink-0" />
                 <h3 className="font-bold text-base">השיעורים שלי</h3>
                 <span className="text-xs text-white/60 mr-auto">{schedules.length} משבצות</span>
               </div>
-              <div className="flex items-center gap-2 bg-white/10 p-1 rounded-lg border border-white/15">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setWeekStart((prev) =>
-                      weekAnchorDate(addDaysToDateStr(getWeekStartDateStr(prev), -7)),
-                    )
-                  }
-                  className="press p-2 hover:bg-white/15 rounded-lg shrink-0"
-                  aria-label="שבוע קודם"
-                >
-                  <ChevronRight className="w-5 h-5" />
-                </button>
-                <div className="flex-1 text-center min-w-0">
-                  <p className="font-bold text-sm truncate">{formatWeekRangeLabel(weekStartStr)}</p>
-                  {isCurrentWeek && (
-                    <p className="text-[10px] text-amber-300 font-bold">השבוע הנוכחי</p>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setWeekStart((prev) =>
-                      weekAnchorDate(addDaysToDateStr(getWeekStartDateStr(prev), 7)),
-                    )
-                  }
-                  className="press p-2 hover:bg-white/15 rounded-lg shrink-0"
-                  aria-label="שבוע הבא"
-                >
-                  <ChevronLeft className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
 
-            {/* Status banner */}
-            {schedules.length > 0 && (
-              <div
-                className={`rounded-xl border px-4 py-3 text-sm font-bold ${
-                  pendingCount > 0
-                    ? 'bg-amber-50 border-amber-200 text-amber-950'
-                    : 'bg-green-50 border-green-200 text-green-900'
-                }`}
-              >
-                {pendingCount > 0 ? (
-                  <span>
-                    יש לך {pendingCount} שיעורים לדיווח בשבוע זה
-                    {doneCount > 0 && (
-                      <span className="font-normal text-amber-800/80"> · {doneCount} כבר דווחו</span>
-                    )}
-                    {holidayCount > 0 && (
-                      <span className="font-normal text-amber-800/80"> · {holidayCount} בחופשה</span>
-                    )}
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-2">
-                    <CheckCircle className="w-4 h-4" />
-                    {holidayCount > 0 && doneCount === 0
-                      ? 'אין שיעורים לדיווח בשבוע זה (ימי חופשה)'
-                      : 'כל השיעורים דווחו בשבוע זה'}
-                  </span>
-                )}
+              <div className="flex gap-1 p-1 bg-white/10 rounded-lg border border-white/15" role="tablist" aria-label="תצוגת דיווח">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={reportViewMode === 'week'}
+                  onClick={() => setReportViewMode('week')}
+                  className={`press flex-1 py-2 rounded-md text-xs font-bold transition-colors ${
+                    reportViewMode === 'week'
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-white/80 hover:bg-white/10'
+                  }`}
+                >
+                  שבוע
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={reportViewMode === 'month'}
+                  onClick={switchToMonthView}
+                  className={`press flex-1 py-2 rounded-md text-xs font-bold transition-colors ${
+                    reportViewMode === 'month'
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-white/80 hover:bg-white/10'
+                  }`}
+                >
+                  חודש
+                </button>
               </div>
-            )}
+
+              {reportViewMode === 'week' && (
+                <div className="flex items-center gap-2 bg-white/10 p-1 rounded-lg border border-white/15">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setWeekStart((prev) =>
+                        weekAnchorDate(addDaysToDateStr(getWeekStartDateStr(prev), -7)),
+                      )
+                    }
+                    className="press p-2 hover:bg-white/15 rounded-lg shrink-0"
+                    aria-label="שבוע קודם"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                  <div className="flex-1 text-center min-w-0">
+                    <p className="font-bold text-sm truncate">{formatWeekRangeLabel(weekStartStr)}</p>
+                    {isCurrentWeek && (
+                      <p className="text-[10px] text-amber-300 font-bold">השבוע הנוכחי</p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setWeekStart((prev) =>
+                        weekAnchorDate(addDaysToDateStr(getWeekStartDateStr(prev), 7)),
+                      )
+                    }
+                    className="press p-2 hover:bg-white/15 rounded-lg shrink-0"
+                    aria-label="שבוע הבא"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                </div>
+              )}
+            </div>
 
             {schedules.length === 0 ? (
               <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-8 text-center space-y-2">
@@ -510,93 +828,91 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 <p className="font-bold text-gray-700">לא שויכו לך שיעורים פרטניים</p>
                 <p className="text-sm text-gray-500">פנה למנהל המערכת לשיבוץ שעות.</p>
               </div>
+            ) : reportViewMode === 'week' ? (
+              <>
+                <div
+                  className={`rounded-xl border px-4 py-3 text-sm font-bold ${
+                    pendingCount > 0
+                      ? 'bg-amber-50 border-amber-200 text-amber-950'
+                      : 'bg-green-50 border-green-200 text-green-900'
+                  }`}
+                >
+                  {pendingCount > 0 ? (
+                    <span>
+                      יש לך {pendingCount} שיעורים לדיווח בשבוע זה
+                      {doneCount > 0 && (
+                        <span className="font-normal text-amber-800/80"> · {doneCount} כבר דווחו</span>
+                      )}
+                      {holidayCount > 0 && (
+                        <span className="font-normal text-amber-800/80"> · {holidayCount} בחופשה</span>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-2">
+                      <CheckCircle className="w-4 h-4" />
+                      {holidayCount > 0 && doneCount === 0
+                        ? 'אין שיעורים לדיווח בשבוע זה (ימי חופשה)'
+                        : 'כל השיעורים דווחו בשבוע זה'}
+                    </span>
+                  )}
+                </div>
+                <div className="space-y-3">{weekSlots.map(renderSlotCard)}</div>
+              </>
             ) : (
-              <div className="space-y-3">
-                {weekSlots.map(({ slot, date, report, holiday }) => {
-                  const isPending = !report && !holiday;
-                  return (
-                    <div
-                      key={slot.id}
-                      className={`bg-white rounded-xl border p-4 shadow-sm transition-shadow ${
-                        holiday
-                          ? 'border-amber-200 bg-amber-50/40'
-                          : isPending
-                            ? 'border-blue-200 ring-1 ring-blue-50'
-                            : report?.status === 'completed'
-                              ? 'border-green-100'
-                              : 'border-red-100'
-                      }`}
-                    >
-                      <div className="flex flex-col gap-3">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2 mb-1.5">
-                            <span className="text-sm font-bold text-gray-900">
-                              {formatHebrewDateLong(date, slot.day)}
-                            </span>
-                            <span className="text-xs font-bold text-blue-800 bg-blue-50 px-2 py-0.5 rounded-md">
-                              {formatHourSlot(slot.hour)}
-                            </span>
-                            <span
-                              className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                                slot.lessonType === 'flexible'
-                                  ? 'bg-amber-100 text-amber-900'
-                                  : 'bg-slate-100 text-slate-700'
-                              }`}
-                            >
-                              {slot.lessonType === 'flexible' ? 'גמיש' : 'קבוע'}
-                            </span>
-                          </div>
-                          <h4 className="font-bold text-gray-900 text-base break-words">
-                            {slot.lessonType === 'flexible'
-                              ? 'שיעור גמיש'
-                              : getScheduleDisplayLabel(slot, students)}
-                          </h4>
-                          <p className="text-xs text-gray-500 mt-0.5">{slot.subject}</p>
-                        </div>
+              <>
+                <MonthReportCalendar
+                  year={monthYear}
+                  month={monthIndex}
+                  schedules={schedules}
+                  reports={reports}
+                  holidays={holidays}
+                  selectedDateStr={selectedMonthDay}
+                  onSelectDay={selectMonthDay}
+                  onPrevMonth={() =>
+                    setMonthCursor((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))
+                  }
+                  onNextMonth={() =>
+                    setMonthCursor((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))
+                  }
+                />
 
-                        <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-                          {holiday && !report ? (
-                            <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-900">
-                              <Calendar className="w-4 h-4" />
-                              מבוטל — חופשה{holiday.name ? ` (${holiday.name})` : ''}
-                            </span>
-                          ) : report ? (
-                            <>
-                              <span
-                                className={`inline-flex items-center gap-1.5 text-xs font-bold ${
-                                  report.status === 'completed' ? 'text-green-700' : 'text-red-600'
-                                }`}
-                              >
-                                {report.status === 'completed' ? (
-                                  <CheckCircle className="w-4 h-4" />
-                                ) : (
-                                  <XCircle className="w-4 h-4" />
-                                )}
-                                {report.status === 'completed' ? 'דווח — התקיים' : 'דווח — בוטל'}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => openReportForm(slot, date, report)}
-                                className="press sm:mr-auto px-4 py-2.5 rounded-lg text-sm font-bold bg-gray-100 text-gray-800 hover:bg-gray-200 w-full sm:w-auto"
-                              >
-                                ערוך דיווח
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => openReportForm(slot, date)}
-                              className="press w-full sm:w-auto sm:mr-auto px-5 py-3 rounded-xl text-sm font-bold bg-blue-600 text-white hover:bg-blue-700 shadow-sm"
-                            >
-                              דווח עכשיו
-                            </button>
+                {selectedMonthDay ? (
+                  <div className="space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <h4 className="font-bold text-gray-900 text-sm">
+                        {formatHebrewDateLong(selectedMonthDay)}
+                      </h4>
+                      {monthDaySlots.length > 0 && (
+                        <p className="text-xs text-gray-500 font-bold">
+                          {monthDayPending > 0
+                            ? `${monthDayPending} לדיווח`
+                            : monthDayDone > 0
+                              ? 'הכל דווח'
+                              : monthDayHoliday > 0
+                                ? 'חופשה'
+                                : ''}
+                          {monthDayDone > 0 && monthDayPending > 0 && (
+                            <span className="font-normal"> · {monthDayDone} דווחו</span>
                           )}
-                        </div>
-                      </div>
+                        </p>
+                      )}
                     </div>
-                  );
-                })}
-              </div>
+
+                    {monthDaySlots.length === 0 ? (
+                      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center">
+                        <p className="text-sm font-bold text-gray-500">אין שיעורים ביום זה</p>
+                        <p className="text-xs text-gray-400 mt-1">בחר יום עם נקודה בלוח החודשי</p>
+                      </div>
+                    ) : (
+                      monthDaySlots.map(renderSlotCard)
+                    )}
+                  </div>
+                ) : (
+                  <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 text-center">
+                    <p className="text-sm font-bold text-gray-500">בחר יום בלוח כדי לראות שיעורים</p>
+                  </div>
+                )}
+              </>
             )}
           </motion.div>
         )}
@@ -689,6 +1005,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                               type="button"
                               onClick={() => {
                                 setTeacherTab('overview');
+                                setReportViewMode('week');
                                 const weekOf = getWeekStartDateStr(new Date(`${rep.date}T12:00:00`));
                                 setWeekStart(weekAnchorDate(weekOf));
                                 openReportForm(sched, rep.date, rep);

@@ -1237,8 +1237,10 @@ const App = () => {
       setReportAttendedIds(existing.attendedStudentIds);
     } else {
       const expected = getExpectedStudentIdsForReport(sched);
-      const lastIds = getLastAttendedStudentIds(sched.id, reports);
-      if (sched.lessonType === 'flexible' && lastIds.length > 0) {
+      const lastIds = getLastAttendedStudentIds(sched.id, reports).filter((id) =>
+        students.some((s) => s.id === id && s.active),
+      );
+      if (isFlexibleAttendance(sched) && lastIds.length > 0) {
         setReportAttendedIds(lastIds);
       } else if (expected.length > 0) {
         setReportAttendedIds(expected);

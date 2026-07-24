@@ -15,6 +15,28 @@ interface StudentPickerProps {
   showSelectAll?: boolean;
 }
 
+const StudentRow: React.FC<{
+  student: Student;
+  checked: boolean;
+  onToggle: () => void;
+  badge?: string;
+}> = ({ student, checked, onToggle, badge }) => (
+  <label
+    className={`flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50 border-b border-gray-50 last:border-0 ${
+      checked ? 'bg-blue-50' : ''
+    }`}
+  >
+    <input type="checkbox" checked={checked} onChange={onToggle} className="rounded" />
+    <span className="text-sm font-medium text-gray-900 flex-1">{student.name}</span>
+    {badge && (
+      <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">
+        {badge}
+      </span>
+    )}
+    <span className="text-xs text-gray-500">{student.className}</span>
+  </label>
+);
+
 const StudentPicker: React.FC<StudentPickerProps> = ({
   students,
   selectedIds,
@@ -34,6 +56,13 @@ const StudentPicker: React.FC<StudentPickerProps> = ({
 
   const classNames = useMemo(() => getUniqueClassNames(students), [students]);
 
+  const lastSessionSet = useMemo(() => new Set(lastSessionIds), [lastSessionIds]);
+
+  const lastSessionStudents = useMemo(
+    () => activeStudents.filter((s) => lastSessionSet.has(s.id)),
+    [activeStudents, lastSessionSet],
+  );
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return activeStudents.filter((s) => {
@@ -42,6 +71,15 @@ const StudentPicker: React.FC<StudentPickerProps> = ({
       return s.name.toLowerCase().includes(q) || s.className.toLowerCase().includes(q);
     });
   }, [activeStudents, search, classFilter]);
+
+  const isFiltering = Boolean(search.trim() || classFilter);
+
+  const filteredOthers = useMemo(
+    () => filtered.filter((s) => !lastSessionSet.has(s.id)),
+    [filtered, lastSessionSet],
+  );
+
+  const showGrouped = lastSessionStudents.length > 0 && !isFiltering;
 
   const toggle = (id: string) => {
     if (selectedIds.includes(id)) {
@@ -64,7 +102,7 @@ const StudentPicker: React.FC<StudentPickerProps> = ({
 
   const clearSelection = () => onChange([]);
 
-  const lastSessionAvailable = lastSessionIds.some((id) => activeStudents.some((s) => s.id === id));
+  const lastSessionAvailable = lastSessionStudents.length > 0;
 
   return (
     <div className="space-y-2">
@@ -148,31 +186,54 @@ const StudentPicker: React.FC<StudentPickerProps> = ({
       <div className={`border rounded-lg overflow-y-auto ${maxHeight} bg-white`}>
         {filtered.length === 0 ? (
           <p className="text-xs text-gray-400 p-3 text-center">לא נמצאו תלמידים</p>
-        ) : (
-          filtered.map((s) => {
-            const checked = selectedIds.includes(s.id);
-            return (
-              <label
+        ) : showGrouped ? (
+          <>
+            <div className="sticky top-0 z-10 px-3 py-1.5 bg-amber-50 border-b border-amber-100 text-[10px] font-bold text-amber-900">
+              מהשיעור הקודם ({lastSessionStudents.length})
+            </div>
+            {lastSessionStudents.map((s) => (
+              <StudentRow
                 key={s.id}
-                className={`flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50 border-b border-gray-50 last:border-0 ${checked ? 'bg-blue-50' : ''}`}
-              >
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => toggle(s.id)}
-                  className="rounded"
-                />
-                <span className="text-sm font-medium text-gray-900 flex-1">{s.name}</span>
-                <span className="text-xs text-gray-500">{s.className}</span>
-              </label>
-            );
-          })
+                student={s}
+                checked={selectedIds.includes(s.id)}
+                onToggle={() => toggle(s.id)}
+              />
+            ))}
+            {filteredOthers.length > 0 && (
+              <>
+                <div className="sticky top-0 z-10 px-3 py-1.5 bg-gray-50 border-b border-gray-100 text-[10px] font-bold text-gray-500">
+                  שאר התלמידים
+                </div>
+                {filteredOthers.map((s) => (
+                  <StudentRow
+                    key={s.id}
+                    student={s}
+                    checked={selectedIds.includes(s.id)}
+                    onToggle={() => toggle(s.id)}
+                  />
+                ))}
+              </>
+            )}
+          </>
+        ) : (
+          filtered.map((s) => (
+            <StudentRow
+              key={s.id}
+              student={s}
+              checked={selectedIds.includes(s.id)}
+              onToggle={() => toggle(s.id)}
+              badge={lastSessionSet.has(s.id) ? 'קודם' : undefined}
+            />
+          ))
         )}
       </div>
 
       <p className="text-[10px] text-gray-400 flex items-center gap-1">
         <Users className="w-3 h-3" />
         {selectedIds.length} נבחרו מתוך {activeStudents.length}
+        {lastSessionAvailable && !isFiltering && (
+          <span>· {lastSessionStudents.length} מהשיעור הקודם</span>
+        )}
       </p>
     </div>
   );

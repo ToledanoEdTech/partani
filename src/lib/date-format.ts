@@ -23,6 +23,12 @@ export function formatHebrewDateLong(dateStr: string, dayName?: string): string 
   return `${dayPart}${Number(d)} ב${monthName} ${y}`;
 }
 
+/** Calendar month → `יולי 2026` */
+export function formatHebrewMonthLabel(year: number, monthIndex: number): string {
+  const monthName = HEBREW_MONTHS[monthIndex] ?? String(monthIndex + 1);
+  return `${monthName} ${year}`;
+}
+
 /** Week Sunday-start → `13–19 ביולי 2026` */
 export function formatWeekRangeLabel(weekStartStr: string): string {
   const endStr = addDaysToDateStr(weekStartStr, 6);
