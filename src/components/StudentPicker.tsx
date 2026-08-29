@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Search, Users, RotateCcw, CheckCheck } from 'lucide-react';
 import { Student } from '../types';
-import { getUniqueClassNames } from '../lib/students';
+import { compareHebrewNames, getUniqueClassNames } from '../lib/students';
 
 interface StudentPickerProps {
   students: Student[];
@@ -50,7 +50,7 @@ const StudentPicker: React.FC<StudentPickerProps> = ({
   const [classFilter, setClassFilter] = useState('');
 
   const activeStudents = useMemo(
-    () => students.filter((s) => s.active).sort((a, b) => a.name.localeCompare(b.name, 'he')),
+    () => students.filter((s) => s.active).sort((a, b) => compareHebrewNames(a.name, b.name)),
     [students],
   );
 

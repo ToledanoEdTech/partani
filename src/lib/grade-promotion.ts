@@ -60,6 +60,23 @@ export function nextGrade(grade: Grade): Grade | null {
   return GRADE_ORDER[i + 1]!;
 }
 
+/** Yeshiva class order (ז→יב, then track number), with Hebrew fallback. */
+export function compareHebrewClassNames(a: string, b: string): number {
+  const pa = parseClassName(a);
+  const pb = parseClassName(b);
+
+  if (pa && pb) {
+    const gradeCmp = GRADE_ORDER.indexOf(pa.grade) - GRADE_ORDER.indexOf(pb.grade);
+    if (gradeCmp !== 0) return gradeCmp;
+    const trackA = pa.track ? Number.parseInt(pa.track, 10) : 0;
+    const trackB = pb.track ? Number.parseInt(pb.track, 10) : 0;
+    if (trackA !== trackB) return trackA - trackB;
+    return pa.normalized.localeCompare(pb.normalized, 'he');
+  }
+
+  return normalizeClassToken(a).localeCompare(normalizeClassToken(b), 'he');
+}
+
 /** Compute next class label for a single className string. */
 export function promoteClassName(className: string): PromoteResult {
   const parsed = parseClassName(className);

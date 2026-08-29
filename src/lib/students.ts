@@ -1,4 +1,14 @@
 import { Report, Schedule, Student, Teacher } from '../types';
+import { compareHebrewClassNames } from './grade-promotion';
+
+/** Hebrew alphabetical order for person names (א–ב). */
+export function compareHebrewNames(a: string, b: string): number {
+  return a.trim().localeCompare(b.trim(), 'he');
+}
+
+export function sortByHebrewName<T extends { name: string }>(items: T[]): T[] {
+  return [...items].sort((a, b) => compareHebrewNames(a.name, b.name));
+}
 
 export function getStudentById(students: Student[], id: string): Student | undefined {
   return students.find((s) => s.id === id);
@@ -50,7 +60,7 @@ export function getLastAttendedStudentIds(
 
 export function getUniqueClassNames(students: Student[]): string[] {
   const classes = new Set(students.filter((s) => s.active).map((s) => s.className.trim()));
-  return Array.from(classes).sort((a, b) => a.localeCompare(b, 'he'));
+  return Array.from(classes).sort((a, b) => compareHebrewClassNames(a, b));
 }
 
 export function buildStudentNameField(

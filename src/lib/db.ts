@@ -4,10 +4,11 @@ import { Teacher, Schedule, Report, Student, AdminUser } from '../types';
 import { adminAddTeacher, adminDeleteTeacher, adminUpdateTeacher } from './admin-teachers-api';
 import { handleFirestoreError, OperationType, reportFirestoreSnapshotError } from './firestore-errors';
 import { PRIMARY_ADMIN_EMAIL } from './branding';
+import { sortByHebrewName } from './students';
 
 export function subscribeToStudents(callback: (students: Student[]) => void, errorCallback?: (err: Error) => void) {
   return onSnapshot(collection(db, 'students'), (snapshot) => {
-    const students = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Student));
+    const students = sortByHebrewName(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Student)));
     callback(students);
   }, (error) => {
     reportFirestoreSnapshotError(error, OperationType.LIST, 'students');
@@ -17,7 +18,7 @@ export function subscribeToStudents(callback: (students: Student[]) => void, err
 
 export function subscribeToTeachers(callback: (teachers: Teacher[]) => void, errorCallback?: (err: Error) => void) {
   return onSnapshot(collection(db, 'teachers'), (snapshot) => {
-    const teachers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Teacher));
+    const teachers = sortByHebrewName(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Teacher)));
     callback(teachers);
   }, (error) => {
     reportFirestoreSnapshotError(error, OperationType.LIST, 'teachers');
@@ -234,7 +235,7 @@ export function subscribeToAdmins(
           name: data.name || '',
         } as AdminUser;
       });
-      callback(admins.sort((a, b) => a.name.localeCompare(b.name, 'he')));
+      callback(sortByHebrewName(admins));
     },
     (error) => {
       reportFirestoreSnapshotError(error, OperationType.LIST, 'admins');

@@ -32,6 +32,7 @@ import StudentPicker from './components/StudentPicker';
 import StudentCard from './components/StudentCard';
 import {
   buildStudentNameField,
+  compareHebrewNames,
   countStudentCompletedLessons,
   getLastAttendedStudentIds,
   getReportAttendedLabel,
@@ -49,6 +50,7 @@ import { SITE_TITLE, PRIMARY_ADMIN_EMAIL } from './lib/branding';
 import {
   buildStudentPromotionPlan,
   summarizePromotionPlan,
+  compareHebrewClassNames,
   type StudentPromotionPlan,
 } from './lib/grade-promotion';
 import * as XLSX from 'xlsx';
@@ -183,6 +185,10 @@ const App = () => {
   const [studentCardStudent, setStudentCardStudent] = useState<Student | null>(null);
   const [filterStudentClass, setFilterStudentClass] = useState('');
   const [searchStudentName, setSearchStudentName] = useState('');
+  const [studentListSort, setStudentListSort] = usePersistedState<{
+    key: 'name' | 'class';
+    dir: 'asc' | 'desc';
+  }>('partani:studentListSort', { key: 'name', dir: 'asc' }, 'local');
 
   // Report state (admin report modal)
   const [adminReportingSchedule, setAdminReportingSchedule] = useState<Schedule | null>(null);
@@ -282,7 +288,7 @@ const App = () => {
     );
 
     const unsubStudents = subscribeToStudents(
-      (data) => setStudents(data.sort((a, b) => a.name.localeCompare(b.name, 'he'))),
+      (data) => setStudents(data),
       (err) => triggerNotification('שגיאה בטעינת תלמידים', 'error')
     );
     
@@ -1369,7 +1375,7 @@ const App = () => {
     let cmp = 0;
     switch (key) {
       case 'name':
-        cmp = a.teacher.name.localeCompare(b.teacher.name, 'he');
+        cmp = compareHebrewNames(a.teacher.name, b.teacher.name);
         break;
       case 'expected':
         cmp = a.expected - b.expected;
@@ -1395,7 +1401,7 @@ const App = () => {
     if (key !== 'compliancePct' && a.compliancePct !== b.compliancePct) {
       return a.compliancePct - b.compliancePct;
     }
-    return a.teacher.name.localeCompare(b.teacher.name, 'he');
+    return compareHebrewNames(a.teacher.name, b.teacher.name);
   };
 
   const teacherComplianceSorted = useMemo(
@@ -1534,17 +1540,55 @@ const App = () => {
 
   const filteredTeachersList = useMemo(() => {
     const q = searchTeacher.trim().toLowerCase();
-    return teachers.filter((t) => {
-      if (filterTeacherActive === 'active' && !t.active) return false;
-      if (filterTeacherActive === 'inactive' && t.active) return false;
-      if (!q) return true;
-      return (
-        t.name.toLowerCase().includes(q) ||
-        t.email.toLowerCase().includes(q) ||
-        t.subject.toLowerCase().includes(q)
-      );
-    });
+    return teachers
+      .filter((t) => {
+        if (filterTeacherActive === 'active' && !t.active) return false;
+        if (filterTeacherActive === 'inactive' && t.active) return false;
+        if (!q) return true;
+        return (
+          t.name.toLowerCase().includes(q) ||
+          t.email.toLowerCase().includes(q) ||
+          t.subject.toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => compareHebrewNames(a.name, b.name));
   }, [teachers, searchTeacher, filterTeacherActive]);
+
+  const filteredStudentsList = useMemo(() => {
+    const q = searchStudentName.trim().toLowerCase();
+    const filtered = students.filter((s) => {
+      if (filterStudentClass && s.className !== filterStudentClass) return false;
+      if (q) return s.name.toLowerCase().includes(q);
+      return true;
+    });
+    const mult = studentListSort.dir === 'asc' ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      let cmp = 0;
+      if (studentListSort.key === 'class') {
+        cmp = compareHebrewClassNames(a.className, b.className);
+        if (cmp === 0) cmp = compareHebrewNames(a.name, b.name);
+      } else {
+        cmp = compareHebrewNames(a.name, b.name);
+        if (cmp === 0) cmp = compareHebrewClassNames(a.className, b.className);
+      }
+      return cmp * mult;
+    });
+  }, [students, filterStudentClass, searchStudentName, studentListSort]);
+
+  const toggleStudentListSort = (key: 'name' | 'class') => {
+    setStudentListSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+        : { key, dir: 'asc' },
+    );
+  };
+
+  const studentListSortIndicator = (key: 'name' | 'class') => {
+    if (studentListSort.key !== key) return null;
+    return studentListSort.dir === 'asc'
+      ? <ChevronUp className="w-3.5 h-3.5 inline mr-0.5" />
+      : <ChevronDown className="w-3.5 h-3.5 inline mr-0.5" />;
+  };
 
   const filteredSchedulesList = useMemo(() => {
     const q = searchSchedule.trim().toLowerCase();
@@ -2721,23 +2765,21 @@ const App = () => {
                     <option value="">כל הכיתות</option>
                     {getUniqueClassNames(students).map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
+                  <select
+                    value={studentListSort.key}
+                    onChange={(e) => setStudentListSort({ key: e.target.value as 'name' | 'class', dir: 'asc' })}
+                    className="p-2 border rounded-lg text-sm bg-white w-full sm:w-auto sm:min-w-[120px]"
+                  >
+                    <option value="name">מיון לפי שם</option>
+                    <option value="class">מיון לפי כיתה</option>
+                  </select>
                   <span className="text-sm text-gray-500 self-center">{students.filter(s => s.active).length} תלמידים פעילים</span>
                 </div>
 
                 <div className="bg-white rounded-lg border border-gray-200 shadow-sm flex-1 overflow-hidden">
-                  {(() => {
-                    const filteredStudents = students.filter(s => {
-                      if (filterStudentClass && s.className !== filterStudentClass) return false;
-                      if (searchStudentName.trim()) {
-                        const q = searchStudentName.trim().toLowerCase();
-                        return s.name.toLowerCase().includes(q);
-                      }
-                      return true;
-                    });
-                    return (
-                      <>
+                  <>
                         <div className="md:hidden divide-y">
-                          {filteredStudents.map(s => {
+                          {filteredStudentsList.map(s => {
                             const lessonCount = studentLessonCounts.get(s.id) ?? 0;
                             return (
                               <div key={s.id} className="p-4 space-y-3">
@@ -2773,15 +2815,23 @@ const App = () => {
                           <table className="w-full text-right">
                             <thead className="bg-gray-50 text-xs text-gray-500 border-b">
                               <tr>
-                                <th className="px-6 py-4">שם</th>
-                                <th className="px-6 py-4">כיתה</th>
+                                <th className="px-6 py-4">
+                                  <button type="button" onClick={() => toggleStudentListSort('name')} className="press inline-flex items-center font-bold hover:text-gray-800 transition-colors">
+                                    {studentListSortIndicator('name')}שם
+                                  </button>
+                                </th>
+                                <th className="px-6 py-4">
+                                  <button type="button" onClick={() => toggleStudentListSort('class')} className="press inline-flex items-center font-bold hover:text-gray-800 transition-colors">
+                                    {studentListSortIndicator('class')}כיתה
+                                  </button>
+                                </th>
                                 <th className="px-6 py-4 text-center">סטטוס</th>
                                 <th className="px-6 py-4 text-center">שעות פרטניות</th>
                                 <th className="px-6 py-4 text-center">פעולות</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y text-sm">
-                              {filteredStudents.map(s => {
+                              {filteredStudentsList.map(s => {
                                 const lessonCount = studentLessonCounts.get(s.id) ?? 0;
                                 return (
                                   <tr key={s.id} className="transition-colors hover:bg-blue-50/40">
@@ -2818,9 +2868,7 @@ const App = () => {
                             </tbody>
                           </table>
                         </div>
-                      </>
-                    );
-                  })()}
+                  </>
                 </div>
               </motion.div>
             )}
