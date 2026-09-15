@@ -87,6 +87,12 @@ export interface Schedule {
   lessonType?: LessonType;
   /** Student document IDs assigned to a fixed lesson. */
   studentIds?: string[];
+  /**
+   * First calendar day this recurring lesson is in effect (YYYY-MM-DD).
+   * Occurrences before this date are not expected / not missing.
+   * Missing on existing documents = in effect from the start of the school year.
+   */
+  startDate?: string;
 }
 
 export interface Report {

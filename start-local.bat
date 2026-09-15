@@ -1,18 +1,17 @@
 @echo off
-chcp 65001 >nul
+setlocal EnableExtensions
 title Partani - Local Dev Server
+cd /d "%~dp0"
 
 echo ============================================================
-echo   Partani - Sivta Tzvia Elishiv Lod - Local Dev Server
+echo   Partani - Local Dev Server
 echo ============================================================
 echo.
-
-cd /d "%~dp0"
 
 where node >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] Node.js is not installed or not in PATH.
-    echo Please install Node.js from https://nodejs.org/
+    echo Download it from https://nodejs.org/ and restart this file.
     echo.
     pause
     exit /b 1
@@ -24,14 +23,17 @@ echo [INFO] NPM version:
 call npm -v
 echo.
 
-REM Fix for SSL certificate issues on Windows networks
-set "NODE_OPTIONS=--use-system-ca"
+REM Only set this flag when the installed Node actually supports it.
+node --use-system-ca -e "process.exit(0)" >nul 2>nul
+if not errorlevel 1 (
+    set "NODE_OPTIONS=--use-system-ca"
+)
 
-REM Verify .env.local exists and has the required Firebase config
 if not exist ".env.local" (
-    echo [ERROR] .env.local not found in this folder.
-    echo The app needs Firebase config in .env.local to run.
-    echo Copy .env.example to .env.local and fill in your Firebase values.
+    echo [ERROR] Missing .env.local in this folder.
+    echo The app needs Firebase config to sign in.
+    echo Copy .env.example to .env.local and fill in VITE_FIREBASE_* values.
+    echo.
     pause
     exit /b 1
 )
@@ -39,45 +41,49 @@ if not exist ".env.local" (
 findstr /b "VITE_FIREBASE_API_KEY=" ".env.local" >nul
 if errorlevel 1 (
     echo [ERROR] .env.local is missing VITE_FIREBASE_API_KEY.
-    echo Open .env.local and make sure all VITE_FIREBASE_* variables are set.
-    echo Look at .env.example for the full list.
+    echo Open .env.local and fill in the VITE_FIREBASE_* values from .env.example.
+    echo.
     pause
     exit /b 1
 )
+echo [INFO] .env.local found.
 
-REM Kill any existing process holding port 3000 from previous runs
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":3000 " ^| findstr "LISTENING"') do (
-    echo [INFO] Stopping previous dev server on port 3000 ^(PID %%P^)...
-    taskkill /F /PID %%P >nul 2>nul
-)
+REM Free port 3000 if a previous run is still listening.
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('[INFO] Stopping previous server on port 3000 (PID ' + $_.OwningProcess + ')...'); Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"
 
 if not exist "node_modules\vite" (
-    echo [INFO] Dependencies not found. Running 'npm install'...
-    echo This may take a few minutes on the first run.
+    echo [INFO] Installing dependencies. This can take a few minutes the first time.
     echo.
     call npm install --no-audit --no-fund
     if errorlevel 1 (
         echo.
-        echo [ERROR] npm install failed. See errors above.
+        echo [ERROR] npm install failed. See the errors above.
+        echo.
         pause
         exit /b 1
     )
     echo.
-    echo [INFO] Dependencies installed successfully.
+    echo [INFO] Dependencies installed.
     echo.
 )
 
 echo ============================================================
-echo   Starting the development server...
-echo   The app will open at: http://localhost:3000
+echo   Starting http://localhost:3000
 echo   Press Ctrl+C to stop the server.
 echo ============================================================
 echo.
 
-start "" "http://localhost:3000"
+REM Open the browser after the server has a moment to boot.
+start "" cmd /c "timeout /t 5 /nobreak >nul & start http://localhost:3000"
 
 call npm run dev
+set "DEV_EXIT=%ERRORLEVEL%"
 
 echo.
+if not "%DEV_EXIT%"=="0" (
+    echo [ERROR] The dev server exited with code %DEV_EXIT%.
+)
 echo [INFO] Server stopped.
 pause
+exit /b %DEV_EXIT%

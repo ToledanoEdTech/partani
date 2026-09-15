@@ -5,6 +5,7 @@ import {
   getCanonicalLessonDate,
   getDayOfWeekForDateStr,
   getWeekStartDateStr,
+  isScheduleActiveOnDate,
 } from './lesson-stats';
 
 /** Sunday-start YYYY-MM-DD for the week that contains `dateStr`. */
@@ -62,13 +63,19 @@ export function findReportForScheduleWeek(
 
 /** Resolve the lesson date to persist — must be the schedule weekday. */
 export function resolveLessonDateForSave(
-  schedule: Pick<Schedule, 'day'>,
+  schedule: Pick<Schedule, 'day' | 'startDate'>,
   pickedDateStr: string,
 ): { ok: true; lessonDate: string } | { ok: false; message: string } {
   if (!isLessonDateForSchedule(schedule, pickedDateStr)) {
     return {
       ok: false,
       message: `תאריך השיעור חייב להיות ביום ${schedule.day}. בחר את התאריך שבו התקיים השיעור בפועל.`,
+    };
+  }
+  if (!isScheduleActiveOnDate(schedule, pickedDateStr)) {
+    return {
+      ok: false,
+      message: `השיעור מוגדר להתחיל מ-${schedule.startDate}. לא ניתן לדווח על תאריך מוקדם יותר.`,
     };
   }
   return { ok: true, lessonDate: pickedDateStr };

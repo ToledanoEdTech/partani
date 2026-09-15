@@ -62,6 +62,7 @@ import {
   getEmailReminderScheduleInfo,
   getMissingLessonsForTeacherThisWeek,
   getWeekStartDateStr,
+  isScheduleActiveOnDate,
 } from './lib/lesson-stats';
 import {
   buildHolidayDateSet,
@@ -70,6 +71,7 @@ import {
   mergeHolidayPeriods,
   normalizeHolidayPeriod,
   normalizeHolidayPeriods,
+  parseFlexibleDate,
 } from './lib/holidays';
 import {
   findReportForLessonDate,
@@ -176,6 +178,9 @@ const App = () => {
   const [newScheduleSubject, setNewScheduleSubject] = useState(DEFAULT_SCHEDULE_SUBJECTS[0]);
   const [newScheduleLessonType, setNewScheduleLessonType] = useState<LessonType>('fixed');
   const [newScheduleStudentIds, setNewScheduleStudentIds] = useState<string[]>([]);
+  const [newScheduleStartDate, setNewScheduleStartDate] = useState(() =>
+    formatDateInTZ(new Date(), ISRAEL_TIMEZONE),
+  );
 
   const [newStudentName, setNewStudentName] = useState('');
   const [newStudentClass, setNewStudentClass] = useState('');
@@ -436,6 +441,10 @@ const App = () => {
         const typeRaw = String(row['סוג'] || row['Type'] || 'קבוע').trim();
         const lessonType: LessonType = typeRaw === 'גמיש' || typeRaw.toLowerCase() === 'flexible' ? 'flexible' : 'fixed';
         const studentsRaw = String(row['תלמידים'] || row['תלמיד'] || row['Student'] || '');
+        const startDate =
+          parseFlexibleDate(
+            row['תאריך התחלה'] ?? row['מתאריך'] ?? row['Start Date'] ?? row['startDate'],
+          ) || undefined;
 
         if (email && day && hour) {
           const teacher = teachers.find(t => t.email === email);
@@ -450,6 +459,7 @@ const App = () => {
               lessonType,
               studentIds,
               studentName: buildStudentNameField(lessonType, studentIds, students),
+              ...(startDate ? { startDate } : {}),
             });
             count++;
           } else {
@@ -501,6 +511,7 @@ const App = () => {
         'סוג': s.lessonType === 'flexible' ? 'גמיש' : 'קבוע',
         'תלמידים': getScheduleDisplayLabel(s, students),
         'מקצוע': s.subject,
+        'תאריך התחלה': s.startDate ?? '',
       };
     });
     writeExcelFile(rows, 'שיעורים', `שיעורים_${formatDateInTZ(new Date(), ISRAEL_TIMEZONE)}.xlsx`);
@@ -519,8 +530,8 @@ const App = () => {
 
   const handleDownloadSchedulesTemplate = () => {
     const ws = XLSX.utils.json_to_sheet([
-      { 'אימייל מורה': 'israel@example.com', 'יום': 'ראשון', 'שעה': '2', 'סוג': 'קבוע', 'תלמידים': 'אברהם פריד, יעקב כהן', 'מקצוע': 'מתמטיקה' },
-      { 'אימייל מורה': 'moshe@example.com', 'יום': 'שני', 'שעה': '5', 'סוג': 'גמיש', 'תלמידים': '', 'מקצוע': 'אנגלית' }
+      { 'אימייל מורה': 'israel@example.com', 'יום': 'ראשון', 'שעה': '2', 'סוג': 'קבוע', 'תלמידים': 'אברהם פריד, יעקב כהן', 'מקצוע': 'מתמטיקה', 'תאריך התחלה': '2026-09-01' },
+      { 'אימייל מורה': 'moshe@example.com', 'יום': 'שני', 'שעה': '5', 'סוג': 'גמיש', 'תלמידים': '', 'מקצוע': 'אנגלית', 'תאריך התחלה': '2026-01-15' }
     ]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'שיעורים');
@@ -934,6 +945,7 @@ const App = () => {
       return;
     }
     const tItem = teachers.find(t => t.id === scheduleToEdit.teacherId);
+    const startDate = (scheduleToEdit.startDate || '').trim();
     await updateSchedule(scheduleToEdit.id, {
       day: scheduleToEdit.day,
       hour: scheduleToEdit.hour,
@@ -943,6 +955,7 @@ const App = () => {
       lessonType,
       studentIds,
       studentName: buildStudentNameField(lessonType, studentIds, students),
+      ...(startDate ? { startDate } : {}),
     });
     setScheduleToEdit(null);
     triggerNotification('שעת השיעור עודכנה בהצלחה');
@@ -969,6 +982,11 @@ const App = () => {
       triggerNotification('נא למלא את כל השדות', 'error');
       return;
     }
+    const startDate = parseFlexibleDate(newScheduleStartDate);
+    if (!startDate) {
+      triggerNotification('יש לבחור תאריך התחלה לשיעור', 'error');
+      return;
+    }
     if (newScheduleLessonType === 'fixed' && newScheduleStudentIds.length === 0) {
       triggerNotification('יש לבחור לפחות תלמיד אחד לשיעור קבוע', 'error');
       return;
@@ -985,10 +1003,12 @@ const App = () => {
       lessonType: newScheduleLessonType,
       studentIds: newScheduleLessonType === 'fixed' ? newScheduleStudentIds : [],
       studentName: buildStudentNameField(newScheduleLessonType, newScheduleStudentIds, students),
+      startDate,
     });
     setNewScheduleHour('0');
     setNewScheduleStudentIds([]);
     setNewScheduleSubject(DEFAULT_SCHEDULE_SUBJECTS[0]);
+    setNewScheduleStartDate(formatDateInTZ(new Date(), ISRAEL_TIMEZONE));
     setShowAddScheduleModal(false);
     triggerNotification('שעת שיעור פרטני נוספה בהצלחה למערכת');
   };
@@ -1949,7 +1969,11 @@ const App = () => {
                   </button>
                   <button
                     type="button"
-                    onClick={() => { setAdminTab('schedule'); setShowAddScheduleModal(true); }}
+                    onClick={() => {
+                      setAdminTab('schedule');
+                      setNewScheduleStartDate(formatDateInTZ(new Date(), ISRAEL_TIMEZONE));
+                      setShowAddScheduleModal(true);
+                    }}
                     className="press px-3 py-2 rounded-xl text-xs sm:text-sm font-bold bg-blue-600 text-white hover:bg-blue-700"
                   >
                     + שיבוץ
@@ -2885,7 +2909,10 @@ const App = () => {
                 className="space-y-6"
               >
                                 <div className="flex flex-wrap gap-2">
-                  <button onClick={() => setShowAddScheduleModal(true)} className="press px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded text-sm flex items-center gap-1.5 shadow-sm"><Plus className="w-4 h-4"/> הגדר שיעור פרטני</button>
+                  <button onClick={() => {
+                    setNewScheduleStartDate(formatDateInTZ(new Date(), ISRAEL_TIMEZONE));
+                    setShowAddScheduleModal(true);
+                  }} className="press px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded text-sm flex items-center gap-1.5 shadow-sm"><Plus className="w-4 h-4"/> הגדר שיעור פרטני</button>
                   <button onClick={() => setAdminTab('timetable')} className="press px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 font-bold rounded text-sm flex items-center gap-1.5 shadow-sm"><Clock className="w-4 h-4"/> לוח שבועי</button>
                   <label className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-bold rounded text-sm flex items-center gap-1.5 shadow-sm cursor-pointer">
                     <Upload className="w-4 h-4"/> ייבוא שיעורים מהאקסל
@@ -2980,6 +3007,19 @@ const App = () => {
                               </select>
                            </div>
                          </div>
+                         <div className="max-w-xs">
+                           <label className="text-xs font-bold mb-1 block">תאריך התחלה:</label>
+                           <input
+                             type="date"
+                             required
+                             value={newScheduleStartDate}
+                             onChange={e => setNewScheduleStartDate(e.target.value)}
+                             className="w-full p-2 border rounded-lg bg-white"
+                           />
+                           <p className="text-[11px] text-gray-500 mt-1 leading-snug">
+                             השיעור ייספר במעקב רק מתאריך זה ואילך, ולא מתחילת השנה.
+                           </p>
+                         </div>
                          <div className="flex flex-wrap items-end gap-2">
                            {!showAddSubjectInput ? (
                              <button
@@ -3065,6 +3105,9 @@ const App = () => {
                              <p className="font-bold text-gray-900 break-words">{teacher?.name || 'לא נמצא'}</p>
                              <p className="text-sm text-gray-700 break-words">{getScheduleDisplayLabel(s, students)}</p>
                              <p className="text-xs text-gray-500">{s.subject}</p>
+                             {s.startDate && (
+                               <p className="text-xs text-gray-500">מתחיל {formatHebrewDateShort(s.startDate)}</p>
+                             )}
                            </div>
                            <div className="flex flex-wrap gap-2">
                              <button onClick={() => openAdminReport(s, getLessonDateForScheduleInWeek(s, getWeekStartDateStr(new Date())))} className="press px-3 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors flex items-center gap-1"><ClipboardCheck className="w-3.5 h-3.5"/> דווח</button>
@@ -3078,7 +3121,7 @@ const App = () => {
                   <div className="hidden md:block overflow-x-auto">
                     <table className="w-full text-right border-collapse">
                       <thead>
-                        <tr className="bg-gray-50 border-b text-xs text-gray-500 uppercase"><th className="px-4 py-3">יום</th><th className="px-4 py-3">שעה</th><th className="px-4 py-3">מורה</th><th className="px-4 py-3">סוג</th><th className="px-4 py-3">תלמידים</th><th className="px-4 py-3">מקצוע</th><th className="px-4 py-3 text-center">פעולות</th></tr>
+                        <tr className="bg-gray-50 border-b text-xs text-gray-500 uppercase"><th className="px-4 py-3">יום</th><th className="px-4 py-3">שעה</th><th className="px-4 py-3">מורה</th><th className="px-4 py-3">סוג</th><th className="px-4 py-3">תלמידים</th><th className="px-4 py-3">מקצוע</th><th className="px-4 py-3">תאריך התחלה</th><th className="px-4 py-3 text-center">פעולות</th></tr>
                       </thead>
                       <tbody className="divide-y text-sm">
                         {filteredSchedulesList.map(s => {
@@ -3095,6 +3138,7 @@ const App = () => {
                                </td>
                                <td className="px-4 py-3 text-gray-800">{getScheduleDisplayLabel(s, students)}</td>
                                <td className="px-4 py-3">{s.subject}</td>
+                               <td className="px-4 py-3 text-xs text-gray-600">{s.startDate ? formatHebrewDateShort(s.startDate) : '—'}</td>
                                <td className="px-4 py-3">
                                   <div className="flex gap-1.5 justify-center flex-wrap">
                                     <button onClick={() => openAdminReport(s, getLessonDateForScheduleInWeek(s, getWeekStartDateStr(new Date())))} className="press px-2 py-1 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg flex items-center gap-1"><ClipboardCheck className="w-3.5 h-3.5"/> דווח</button>
@@ -3179,8 +3223,11 @@ const App = () => {
                                   const teacher = teachers.find(t => t.id === s.teacherId);
                                   const weeklyReport = findReportForScheduleWeek(reports, s, weekStartStr);
                                   const holiday = findHolidayForDate(cellDateStr, holidays);
+                                  const notStarted = !isScheduleActiveOnDate(s, cellDateStr);
                                   let statusBadge = <span className="inline-flex items-center gap-1 text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">לא דווח</span>;
-                                  if (holiday) {
+                                  if (notStarted) {
+                                    statusBadge = <span className="inline-flex items-center gap-1 text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">טרם התחיל</span>;
+                                  } else if (holiday) {
                                     statusBadge = <span className="inline-flex items-center gap-1 text-[10px] bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded">חופשה{holiday.name ? ` — ${holiday.name}` : ''}</span>;
                                   } else if (weeklyReport) {
                                     if (weeklyReport.status === 'completed') {
@@ -3190,13 +3237,13 @@ const App = () => {
                                     }
                                   }
                                   return (
-                                    <div key={s.id} className={`text-sm border rounded-lg p-2.5 ${holiday ? 'bg-amber-50 border-amber-200' : weeklyReport ? (weeklyReport.status === 'completed' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200') : 'bg-gray-50 border-gray-200'}`}>
+                                    <div key={s.id} className={`text-sm border rounded-lg p-2.5 ${notStarted ? 'bg-slate-50 border-slate-200' : holiday ? 'bg-amber-50 border-amber-200' : weeklyReport ? (weeklyReport.status === 'completed' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200') : 'bg-gray-50 border-gray-200'}`}>
                                       <div className="font-bold text-blue-800 break-words">{teacher?.name || 'לא ידוע'}</div>
                                       <div className="text-gray-700 font-semibold text-xs break-words">{getScheduleDisplayLabel(s, students)}</div>
                                       <div className="text-gray-500 text-xs">{s.subject}</div>
                                       <div className="mt-2 flex justify-between items-center gap-2">
                                         {statusBadge}
-                                        {!weeklyReport && !holiday && (
+                                        {!weeklyReport && !holiday && !notStarted && (
                                           <button onClick={() => openAdminReport(s, cellDateStr)} className="press text-blue-600 hover:bg-blue-100 px-2 py-1 rounded transition text-xs font-bold flex items-center gap-1" title="דווח שיעור עבור תאריך זה"><ClipboardCheck className="w-3.5 h-3.5"/> דווח</button>
                                         )}
                                       </div>
@@ -3250,9 +3297,12 @@ const App = () => {
                                         const teacher = teachers.find(t => t.id === s.teacherId);
                                         const weeklyReport = findReportForScheduleWeek(reports, s, weekStartStr);
                                         const holiday = findHolidayForDate(cellDateStr, holidays);
+                                        const notStarted = !isScheduleActiveOnDate(s, cellDateStr);
 
                                         let statusBadge = <span className="inline-flex items-center gap-1 text-[10px] bg-gray-100 text-gray-500 px-1 py-0.5 rounded break-all">לא דווח</span>;
-                                        if (holiday) {
+                                        if (notStarted) {
+                                          statusBadge = <span className="inline-flex items-center gap-1 text-[10px] bg-slate-100 text-slate-600 px-1 py-0.5 rounded break-all">טרם התחיל</span>;
+                                        } else if (holiday) {
                                           statusBadge = <span className="inline-flex items-center gap-1 text-[10px] bg-amber-100 text-amber-900 px-1 py-0.5 rounded break-all">חופשה{holiday.name ? ` — ${holiday.name}` : ''}</span>;
                                         } else if (weeklyReport) {
                                           if (weeklyReport.status === 'completed') {
@@ -3263,13 +3313,13 @@ const App = () => {
                                         }
 
                                         return (
-                                          <div key={s.id} className={`text-xs border rounded p-1.5 shadow-sm ${holiday ? 'bg-amber-50 border-amber-200' : weeklyReport ? (weeklyReport.status === 'completed' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200') : 'bg-gray-50 border-gray-200'}`}>
+                                          <div key={s.id} className={`text-xs border rounded p-1.5 shadow-sm ${notStarted ? 'bg-slate-50 border-slate-200' : holiday ? 'bg-amber-50 border-amber-200' : weeklyReport ? (weeklyReport.status === 'completed' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200') : 'bg-gray-50 border-gray-200'}`}>
                                             <div className="font-bold text-blue-800">{teacher?.name || 'לא ידוע'}</div>
                                             <div className="text-gray-700 font-semibold">{getScheduleDisplayLabel(s, students)}</div>
                                             <div className="text-gray-500">{s.subject}</div>
                                             <div className="mt-1 flex justify-between items-center">
                                               {statusBadge}
-                                              {!weeklyReport && !holiday && (
+                                              {!weeklyReport && !holiday && !notStarted && (
                                                 <button onClick={() => openAdminReport(s, cellDateStr)} className="press text-blue-600 hover:bg-blue-100 px-1.5 py-1 rounded transition text-xs font-bold flex items-center gap-1" title="דווח שיעור"><ClipboardCheck className="w-3.5 h-3.5"/><span className="hidden xl:inline">דווח</span></button>
                                               )}
                                             </div>
@@ -3914,12 +3964,16 @@ const App = () => {
                     <input
                       type="date"
                       value={reportDate}
+                      min={adminReportingSchedule.startDate || undefined}
                       onChange={e => setReportDate(e.target.value)}
                       className="w-full p-2.5 border border-gray-200 rounded-xl bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                       required
                     />
                     {reportDate && !isLessonDateForSchedule(adminReportingSchedule, reportDate) && (
                       <p className="text-xs text-red-600 mt-1">התאריך חייב להיות ביום {adminReportingSchedule.day}</p>
+                    )}
+                    {reportDate && !isScheduleActiveOnDate(adminReportingSchedule, reportDate) && (
+                      <p className="text-xs text-red-600 mt-1">השיעור מתחיל ב-{formatHebrewDateShort(adminReportingSchedule.startDate || reportDate)}</p>
                     )}
                   </div>
                   <div>
@@ -4072,6 +4126,18 @@ const App = () => {
                     ))}
                   </select>
                 </div>
+              </div>
+              <div>
+                <label className="text-sm font-bold mb-1 block">תאריך התחלה:</label>
+                <input
+                  type="date"
+                  value={scheduleToEdit.startDate || ''}
+                  onChange={e => setScheduleToEdit({...scheduleToEdit, startDate: e.target.value})}
+                  className="w-full p-2 border rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  השיעור ייספר במעקב רק מתאריך זה ואילך. אם ריק — מתחילת השנה.
+                </p>
               </div>
               <div className="flex justify-end gap-3 pt-4 border-t">
                 <button type="button" onClick={() => setScheduleToEdit(null)} className="press px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded font-bold transition-colors">ביטול</button>

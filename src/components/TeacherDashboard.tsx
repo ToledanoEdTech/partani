@@ -23,6 +23,7 @@ import {
   DAY_MAP,
   getDayOfWeekForDateStr,
   getWeekStartDateStr,
+  isScheduleActiveOnDate,
 } from '../lib/lesson-stats';
 import {
   findReportForLessonDate,
@@ -108,16 +109,21 @@ const MiniCalendar = ({
     const dateStr = calendarDateStr(year, month, d);
     const isSelected = selectedDateStr === dateStr;
     const isScheduleDay = getDayOfWeekForDateStr(dateStr) === schedDayNum;
-    const existingReport = isScheduleDay
+    const beforeStart = Boolean(
+      selectedSchedule.startDate && dateStr < selectedSchedule.startDate,
+    );
+    const existingReport = isScheduleDay && !beforeStart
       ? findReportForLessonDate(reports, selectedSchedule, dateStr)
       : undefined;
-    const onHoliday = isScheduleDay && isHolidayDate(dateStr, holidayDates);
+    const onHoliday = isScheduleDay && !beforeStart && isHolidayDate(dateStr, holidayDates);
 
     let baseClass =
       'press h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-150 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ';
 
     if (isSelected) baseClass += 'ring-2 ring-blue-500 ring-offset-1 ';
-    if (onHoliday) {
+    if (beforeStart) {
+      baseClass += 'hover:bg-gray-100 text-gray-400';
+    } else if (onHoliday) {
       baseClass += 'bg-amber-200 text-amber-950 hover:bg-amber-300';
     } else if (existingReport) {
       baseClass +=
@@ -130,27 +136,31 @@ const MiniCalendar = ({
       baseClass += 'hover:bg-gray-100 text-gray-700';
     }
 
+    const canSelect = isScheduleDay && !onHoliday && !beforeStart;
+
     daysRender.push(
       <div key={d} className="flex flex-col items-center justify-center p-1 relative">
         <button
           type="button"
-          disabled={!isScheduleDay || onHoliday}
-          onClick={() => isScheduleDay && !onHoliday && onDateSelect(dateStr)}
+          disabled={!canSelect}
+          onClick={() => canSelect && onDateSelect(dateStr)}
           className={`${baseClass}${
-            !isScheduleDay
+            !isScheduleDay || beforeStart
               ? ' opacity-30 cursor-not-allowed hover:bg-transparent'
               : onHoliday
                 ? ' cursor-not-allowed'
                 : ''
           }`}
           title={
-            onHoliday
-              ? 'יום חופשה — השיעור מבוטל'
-              : existingReport
-                ? 'כבר דווח'
-                : isScheduleDay
-                  ? 'יום שיעור — לחץ לבחירת תאריך'
-                  : 'לא יום שיעור'
+            beforeStart
+              ? 'השיעור טרם התחיל בתאריך זה'
+              : onHoliday
+                ? 'יום חופשה — השיעור מבוטל'
+                : existingReport
+                  ? 'כבר דווח'
+                  : isScheduleDay
+                    ? 'יום שיעור — לחץ לבחירת תאריך'
+                    : 'לא יום שיעור'
           }
         >
           {d}
@@ -232,7 +242,7 @@ const MonthReportCalendar = ({
     const dateStr = calendarDateStr(year, month, d);
     const dow = getDayOfWeekForDateStr(dateStr);
     const items: SlotItem[] = schedules
-      .filter((slot) => DAY_MAP[slot.day] === dow)
+      .filter((slot) => DAY_MAP[slot.day] === dow && isScheduleActiveOnDate(slot, dateStr))
       .map((slot) => ({
         slot,
         date: dateStr,
@@ -416,12 +426,14 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const holidayDates = useMemo(() => buildHolidayDateSet(holidays), [holidays]);
 
   const weekSlots = useMemo(() => {
-    const items = schedules.map((slot) => {
-      const date = getLessonDateForScheduleInWeek(slot, weekStartStr);
-      const report = findReportForScheduleWeek(reports, slot, weekStartStr);
-      const holiday = findHolidayForDate(date, holidays);
-      return { slot, date, report, holiday };
-    });
+    const items = schedules
+      .map((slot) => {
+        const date = getLessonDateForScheduleInWeek(slot, weekStartStr);
+        const report = findReportForScheduleWeek(reports, slot, weekStartStr);
+        const holiday = findHolidayForDate(date, holidays);
+        return { slot, date, report, holiday };
+      })
+      .filter(({ slot, date }) => isScheduleActiveOnDate(slot, date));
     items.sort((a, b) => {
       const aDone = Boolean(a.report || a.holiday);
       const bDone = Boolean(b.report || b.holiday);
@@ -435,7 +447,7 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     if (!selectedMonthDay) return [];
     const dow = getDayOfWeekForDateStr(selectedMonthDay);
     const items: SlotItem[] = schedules
-      .filter((slot) => DAY_MAP[slot.day] === dow)
+      .filter((slot) => DAY_MAP[slot.day] === dow && isScheduleActiveOnDate(slot, selectedMonthDay))
       .map((slot) => ({
         slot,
         date: selectedMonthDay,
@@ -832,12 +844,16 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               <>
                 <div
                   className={`rounded-xl border px-4 py-3 text-sm font-bold ${
-                    pendingCount > 0
-                      ? 'bg-amber-50 border-amber-200 text-amber-950'
-                      : 'bg-green-50 border-green-200 text-green-900'
+                    weekSlots.length === 0
+                      ? 'bg-gray-50 border-gray-200 text-gray-700'
+                      : pendingCount > 0
+                        ? 'bg-amber-50 border-amber-200 text-amber-950'
+                        : 'bg-green-50 border-green-200 text-green-900'
                   }`}
                 >
-                  {pendingCount > 0 ? (
+                  {weekSlots.length === 0 ? (
+                    <span>אין שיעורים פעילים בשבוע זה</span>
+                  ) : pendingCount > 0 ? (
                     <span>
                       יש לך {pendingCount} שיעורים לדיווח בשבוע זה
                       {doneCount > 0 && (

@@ -200,14 +200,25 @@ export interface MissingLesson {
   subject: string;
 }
 
+/** Whether this recurring slot is already in effect on `dateStr`. */
+export function isScheduleActiveOnDate(
+  schedule: Pick<Schedule, 'startDate'>,
+  dateStr: string,
+): boolean {
+  const start = schedule.startDate?.trim();
+  if (!start) return true;
+  return dateStr >= start;
+}
+
 /**
  * Compute lessons in the current IL calendar week that have already
  * occurred (date ≤ today, IL time) and for which no report exists.
  * Holiday / vacation dates in `holidayDates` are excluded (lessons cancelled).
+ * Occurrences before a schedule's `startDate` are also excluded.
  */
 export function getMissingLessonsForTeacherThisWeek(params: {
   teacherId: string;
-  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day' | 'hour' | 'studentName' | 'subject'>[];
+  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day' | 'hour' | 'studentName' | 'subject' | 'startDate'>[];
   reports: Pick<Report, 'scheduleId' | 'date'>[];
   now?: Date;
   timeZone?: string;
@@ -230,6 +241,7 @@ export function getMissingLessonsForTeacherThisWeek(params: {
     if (offset === undefined) continue;
     const cellDateStr = addDaysToDateStr(weekStartStr, offset);
     if (cellDateStr > todayStr) continue; // not yet past — not missing
+    if (!isScheduleActiveOnDate(slot, cellDateStr)) continue; // not yet started
     if (isHolidayDate(cellDateStr, holidayDates)) continue; // cancelled for vacation
     const reported = reports.some((r) => {
       if (r.scheduleId !== slot.id) return false;
@@ -255,7 +267,7 @@ export function getMissingLessonsForTeacherThisWeek(params: {
 /** Convenience: returns count of past-and-unreported lessons for the week. */
 export function getMissingCountForTeacherThisWeek(params: {
   teacherId: string;
-  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day' | 'hour' | 'studentName' | 'subject'>[];
+  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day' | 'hour' | 'studentName' | 'subject' | 'startDate'>[];
   reports: Pick<Report, 'scheduleId' | 'date'>[];
   now?: Date;
   timeZone?: string;
@@ -270,7 +282,7 @@ export function getMissingCountForTeacherThisWeek(params: {
  */
 export function isTeacherReminderEligible(params: {
   teacher: Pick<Teacher, 'id' | 'email' | 'active' | 'emailRemindersEnabled'>;
-  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day' | 'hour' | 'studentName' | 'subject'>[];
+  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day' | 'hour' | 'studentName' | 'subject' | 'startDate'>[];
   reports: Pick<Report, 'scheduleId' | 'date'>[];
   minMissingLessons: number;
   now?: Date;
@@ -455,11 +467,11 @@ export function filterReportsForActiveSchedules<
 /**
  * Due lessons in the analytics window: schedule occurrences in range whose
  * calendar date has already passed (≤ todayStr). Future lessons are excluded
- * so teachers are not penalised before the lesson happens. Holiday dates are
- * also excluded (cancelled — not expected).
+ * so teachers are not penalised before the lesson happens. Holiday dates and
+ * dates before a schedule's `startDate` are also excluded.
  */
 export function computeDueExpectedSlots(
-  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day'>[],
+  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day' | 'startDate'>[],
   startStr: string,
   endStr: string,
   todayStr: string,
@@ -471,6 +483,7 @@ export function computeDueExpectedSlots(
     if (dow === undefined) continue;
     for (const date of getExpectedDatesForScheduleDay(schedule.day, startStr, endStr)) {
       if (date > todayStr) continue;
+      if (!isScheduleActiveOnDate(schedule, date)) continue;
       if (isHolidayDate(date, holidayDates)) continue;
       slots.push({
         scheduleId: schedule.id,
@@ -505,7 +518,7 @@ function finalizeComplianceCounts(stats: RangeComplianceCounts): RangeCompliance
 
 export function getTeacherComplianceInRange(params: {
   teacherId: string;
-  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day'>[];
+  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day' | 'startDate'>[];
   reports: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[];
   startStr: string;
   endStr: string;
@@ -550,7 +563,7 @@ export interface DashboardAnalytics {
 
 /** Single pass over schedules + active reports for the admin dashboard. */
 export function buildDashboardAnalytics(params: {
-  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day'>[];
+  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day' | 'startDate'>[];
   reports: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[];
   teacherIds: string[];
   startStr: string;
@@ -644,7 +657,7 @@ export interface WeeklyTrendPoint {
  * "100% missed" trailing column.
  */
 export function getWeeklyTrend(params: {
-  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day'>[];
+  schedules: Pick<Schedule, 'id' | 'teacherId' | 'day' | 'startDate'>[];
   reports?: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[];
   dueSlots?: DueExpectedSlot[];
   reportIndex?: Map<string, ReportIndexEntry>;
@@ -713,7 +726,7 @@ const DAY_NAMES_BY_DOW: Record<number, string> = {
 
 /** Day-of-week aggregate stats for Sun..Fri across due lessons only. */
 export function getDayOfWeekStats(params: {
-  schedules?: Pick<Schedule, 'id' | 'teacherId' | 'day'>[];
+  schedules?: Pick<Schedule, 'id' | 'teacherId' | 'day' | 'startDate'>[];
   reports?: Pick<Report, 'scheduleId' | 'teacherId' | 'date' | 'status'>[];
   dueSlots?: DueExpectedSlot[];
   reportIndex?: Map<string, ReportIndexEntry>;
