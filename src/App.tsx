@@ -105,6 +105,19 @@ import {
 // Primary admin email (super-admin). Additional admins live in Firestore `admins/{email}`.
 const ADMIN_EMAIL = PRIMARY_ADMIN_EMAIL;
 
+const SCHEDULE_WEEKDAYS = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי'] as const;
+type ScheduleListSortKey = 'teacher' | 'subject' | 'day';
+
+function scheduleDayIndex(day: string): number {
+  const i = (SCHEDULE_WEEKDAYS as readonly string[]).indexOf(day);
+  return i === -1 ? 99 : i;
+}
+
+function scheduleHourIndex(hour: string): number {
+  const n = Number(hour);
+  return Number.isFinite(n) ? n : 99;
+}
+
 const weekAnchorDate = (dateStr: string) => new Date(`${dateStr}T12:00:00`);
 
 const App = () => {
@@ -156,6 +169,10 @@ const App = () => {
   const [filterScheduleTeacher, setFilterScheduleTeacher] = useState('all');
   const [filterScheduleDay, setFilterScheduleDay] = useState('all');
   const [searchSchedule, setSearchSchedule] = useState('');
+  const [scheduleListSort, setScheduleListSort] = usePersistedState<{
+    key: ScheduleListSortKey;
+    dir: 'asc' | 'desc';
+  }>('partani:scheduleListSort', { key: 'day', dir: 'asc' }, 'local');
 
   // Modals state
   const [showAddTeacherModal, setShowAddTeacherModal] = useState(false);
@@ -1612,11 +1629,12 @@ const App = () => {
 
   const filteredSchedulesList = useMemo(() => {
     const q = searchSchedule.trim().toLowerCase();
-    return schedule.filter((s) => {
+    const teacherById = new Map<string, Teacher>(teachers.map((t) => [t.id, t]));
+    const filtered = schedule.filter((s) => {
       if (filterScheduleTeacher !== 'all' && s.teacherId !== filterScheduleTeacher) return false;
       if (filterScheduleDay !== 'all' && s.day !== filterScheduleDay) return false;
       if (!q) return true;
-      const teacher = teachers.find((t) => t.id === s.teacherId);
+      const teacher = teacherById.get(s.teacherId);
       const label = getScheduleDisplayLabel(s, students).toLowerCase();
       return (
         label.includes(q) ||
@@ -1624,7 +1642,46 @@ const App = () => {
         (teacher?.name.toLowerCase().includes(q) ?? false)
       );
     });
-  }, [schedule, teachers, students, filterScheduleTeacher, filterScheduleDay, searchSchedule]);
+    const teacherName = (s: Schedule) => teacherById.get(s.teacherId)?.name ?? '';
+    const mult = scheduleListSort.dir === 'asc' ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      let cmp = 0;
+      if (scheduleListSort.key === 'teacher') {
+        cmp = compareHebrewNames(teacherName(a), teacherName(b));
+        if (cmp === 0) cmp = scheduleDayIndex(a.day) - scheduleDayIndex(b.day);
+        if (cmp === 0) cmp = scheduleHourIndex(a.hour) - scheduleHourIndex(b.hour);
+      } else if (scheduleListSort.key === 'subject') {
+        cmp = a.subject.trim().localeCompare(b.subject.trim(), 'he');
+        if (cmp === 0) cmp = compareHebrewNames(teacherName(a), teacherName(b));
+        if (cmp === 0) cmp = scheduleDayIndex(a.day) - scheduleDayIndex(b.day);
+      } else {
+        cmp = scheduleDayIndex(a.day) - scheduleDayIndex(b.day);
+        if (cmp === 0) cmp = scheduleHourIndex(a.hour) - scheduleHourIndex(b.hour);
+        if (cmp === 0) cmp = compareHebrewNames(teacherName(a), teacherName(b));
+      }
+      return cmp * mult;
+    });
+  }, [schedule, teachers, students, filterScheduleTeacher, filterScheduleDay, searchSchedule, scheduleListSort]);
+
+  const toggleScheduleListSort = (key: ScheduleListSortKey) => {
+    setScheduleListSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+        : { key, dir: 'asc' },
+    );
+  };
+
+  const scheduleListSortIndicator = (key: ScheduleListSortKey) => {
+    if (scheduleListSort.key !== key) return null;
+    return scheduleListSort.dir === 'asc'
+      ? <ChevronUp className="w-3.5 h-3.5 inline mr-0.5" />
+      : <ChevronDown className="w-3.5 h-3.5 inline mr-0.5" />;
+  };
+
+  const scheduleListAriaSort = (key: ScheduleListSortKey): 'ascending' | 'descending' | 'none' => {
+    if (scheduleListSort.key !== key) return 'none';
+    return scheduleListSort.dir === 'asc' ? 'ascending' : 'descending';
+  };
 
   const missingThisWeekCount = useMemo(() => {
     return activeTeachers.reduce((sum, t) => {
@@ -2926,7 +2983,7 @@ const App = () => {
                   </button>
                 </div>
 
-                <div className="bg-white p-3 sm:p-4 rounded-xl shadow-sm border border-gray-100 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="bg-white p-3 sm:p-4 rounded-xl shadow-sm border border-gray-100 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   <div>
                     <label className="text-xs font-bold text-gray-500 block mb-1">חיפוש</label>
                     <input
@@ -2957,12 +3014,24 @@ const App = () => {
                       className="w-full p-2 border border-gray-200 rounded-lg text-sm bg-white"
                     >
                       <option value="all">הכל</option>
-                      {['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי'].map((d) => (
+                      {SCHEDULE_WEEKDAYS.map((d) => (
                         <option key={d} value={d}>{d}</option>
                       ))}
                     </select>
                   </div>
-                  <p className="sm:col-span-3 text-xs text-gray-500 font-bold">
+                  <div>
+                    <label className="text-xs font-bold text-gray-500 block mb-1">מיון</label>
+                    <select
+                      value={scheduleListSort.key}
+                      onChange={(e) => setScheduleListSort({ key: e.target.value as ScheduleListSortKey, dir: 'asc' })}
+                      className="w-full p-2 border border-gray-200 rounded-lg text-sm bg-white"
+                    >
+                      <option value="day">לפי יום</option>
+                      <option value="teacher">לפי שם מורה</option>
+                      <option value="subject">לפי מקצוע</option>
+                    </select>
+                  </div>
+                  <p className="sm:col-span-2 lg:col-span-4 text-xs text-gray-500 font-bold">
                     מציג {filteredSchedulesList.length} מתוך {schedule.length} שיעורים
                   </p>
                 </div>
@@ -3121,7 +3190,28 @@ const App = () => {
                   <div className="hidden md:block overflow-x-auto">
                     <table className="w-full text-right border-collapse">
                       <thead>
-                        <tr className="bg-gray-50 border-b text-xs text-gray-500 uppercase"><th className="px-4 py-3">יום</th><th className="px-4 py-3">שעה</th><th className="px-4 py-3">מורה</th><th className="px-4 py-3">סוג</th><th className="px-4 py-3">תלמידים</th><th className="px-4 py-3">מקצוע</th><th className="px-4 py-3">תאריך התחלה</th><th className="px-4 py-3 text-center">פעולות</th></tr>
+                        <tr className="bg-gray-50 border-b text-xs text-gray-500 uppercase">
+                          <th className="px-4 py-3" aria-sort={scheduleListAriaSort('day')}>
+                            <button type="button" onClick={() => toggleScheduleListSort('day')} className="press inline-flex items-center font-bold hover:text-gray-800 transition-colors" title="מיון לפי יום">
+                              {scheduleListSortIndicator('day')}יום
+                            </button>
+                          </th>
+                          <th className="px-4 py-3">שעה</th>
+                          <th className="px-4 py-3" aria-sort={scheduleListAriaSort('teacher')}>
+                            <button type="button" onClick={() => toggleScheduleListSort('teacher')} className="press inline-flex items-center font-bold hover:text-gray-800 transition-colors" title="מיון לפי שם מורה">
+                              {scheduleListSortIndicator('teacher')}מורה
+                            </button>
+                          </th>
+                          <th className="px-4 py-3">סוג</th>
+                          <th className="px-4 py-3">תלמידים</th>
+                          <th className="px-4 py-3" aria-sort={scheduleListAriaSort('subject')}>
+                            <button type="button" onClick={() => toggleScheduleListSort('subject')} className="press inline-flex items-center font-bold hover:text-gray-800 transition-colors" title="מיון לפי מקצוע">
+                              {scheduleListSortIndicator('subject')}מקצוע
+                            </button>
+                          </th>
+                          <th className="px-4 py-3">תאריך התחלה</th>
+                          <th className="px-4 py-3 text-center">פעולות</th>
+                        </tr>
                       </thead>
                       <tbody className="divide-y text-sm">
                         {filteredSchedulesList.map(s => {
