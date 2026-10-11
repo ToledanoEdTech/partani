@@ -50,6 +50,7 @@ export default defineConfig(() => {
         'lucide-react',
         'motion/react',
         'xlsx',
+        'exceljs',
       ],
     },
     build: {

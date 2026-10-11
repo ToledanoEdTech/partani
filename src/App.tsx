@@ -89,6 +89,8 @@ import {
   formatHourSlot,
   formatWeekRangeLabel,
 } from './lib/date-format';
+import { buildReportExportModel } from './lib/report-export-model';
+import { ReportsPrintView } from './components/ReportsPrintView';
 import Drawer from './components/Drawer';
 import Modal from './components/Modal';
 import TeacherDashboard from './components/TeacherDashboard';
@@ -361,27 +363,6 @@ const App = () => {
     }
   };
 
-
-  const handleExportReports = () => {
-    const data = filteredReportsList.map(rep => {
-      const sched = schedule.find(s => s.id === rep.scheduleId);
-      const teach = teachers.find(t => t.id === rep.teacherId);
-      const attended = getReportAttendedLabel(rep, sched, students);
-      return {
-        'תאריך': rep.date,
-        'מורה': teach?.name || '-',
-        'תלמידים': attended || (sched ? getScheduleDisplayLabel(sched, students) : 'נמחק'),
-        'מקצוע': sched?.subject || '-',
-        'סטטוס': rep.status === 'completed' ? 'התקיים' : 'בוטל',
-        'פירוט': rep.text
-      };
-    });
-    
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Reports");
-    XLSX.writeFile(wb, "reports.xlsx");
-  };
 
   const handleLogout = async () => {
     await signOut(auth);
@@ -1554,26 +1535,80 @@ const App = () => {
     URL.revokeObjectURL(url);
   };
 
-  const filteredReportsList = reports.filter(report => {
+  const filteredReportsList = useMemo(() => reports.filter(report => {
     const scheduleItem = schedule.find(s => s.id === report.scheduleId);
     const teacherItem = teachers.find(t => t.id === report.teacherId);
-    
+
     const matchesTeacher = filterTeacher === 'all' || report.teacherId === filterTeacher;
     const matchesStatus = filterStatus === 'all' || report.status === filterStatus;
     const matchesDateFrom = !filterReportDateFrom || report.date >= filterReportDateFrom;
     const matchesDateTo = !filterReportDateTo || report.date <= filterReportDateTo;
-    
+
     const searchLower = searchStudent.toLowerCase();
     const attendedLabel = getReportAttendedLabel(report, scheduleItem, students);
     const scheduleLabel = scheduleItem ? getScheduleDisplayLabel(scheduleItem, students) : '';
-    const matchesSearch = searchStudent === '' || 
+    const matchesSearch = searchStudent === '' ||
       scheduleLabel.toLowerCase().includes(searchLower) ||
       attendedLabel.toLowerCase().includes(searchLower) ||
       (teacherItem && teacherItem.name.toLowerCase().includes(searchLower)) ||
       (scheduleItem && scheduleItem.subject.toLowerCase().includes(searchLower));
 
     return matchesTeacher && matchesStatus && matchesSearch && matchesDateFrom && matchesDateTo;
-  });
+  }), [
+    reports,
+    schedule,
+    teachers,
+    students,
+    filterTeacher,
+    filterStatus,
+    filterReportDateFrom,
+    filterReportDateTo,
+    searchStudent,
+  ]);
+
+  const reportExportModel = useMemo(
+    () => buildReportExportModel({
+      filteredReports: filteredReportsList,
+      reports,
+      schedules: schedule,
+      teachers,
+      students,
+      holidayDates,
+      todayStr,
+      filterTeacherId: filterTeacher,
+      filterStatus,
+      filterDateFrom: filterReportDateFrom,
+      filterDateTo: filterReportDateTo,
+      search: searchStudent,
+    }),
+    [
+      filteredReportsList,
+      reports,
+      schedule,
+      teachers,
+      students,
+      holidayDates,
+      todayStr,
+      filterTeacher,
+      filterStatus,
+      filterReportDateFrom,
+      filterReportDateTo,
+      searchStudent,
+    ],
+  );
+
+  const reportsPrintActive = Boolean(user && isAdmin && !isImpersonating && adminTab === 'reports');
+
+  const handleExportReports = async () => {
+    try {
+      const { downloadReportsWorkbook } = await import('./lib/report-excel');
+      await downloadReportsWorkbook(reportExportModel);
+      triggerNotification('קובץ האקסל מוכן להורדה');
+    } catch (err) {
+      console.error(err);
+      triggerNotification('ייצוא האקסל נכשל', 'error');
+    }
+  };
 
   const filteredTeachersList = useMemo(() => {
     const q = searchTeacher.trim().toLowerCase();
@@ -1722,7 +1757,11 @@ const App = () => {
   }
 
   return (
-    <div className="min-h-screen bg-transparent text-[#111827] font-sans flex flex-col" dir="rtl">
+    <div
+      className="min-h-screen bg-transparent text-[#111827] font-sans flex flex-col"
+      dir="rtl"
+      data-print-doc={reportsPrintActive ? 'reports' : undefined}
+    >
       <AnimatePresence>
         {notification.show && (
           <motion.div
@@ -3455,7 +3494,7 @@ const App = () => {
                 <div className="bg-white rounded-lg border border-gray-200 shadow-sm flex-1 overflow-hidden">
                   <div className="p-4 sm:p-5 border-b bg-gray-50 flex flex-col sm:flex-row sm:justify-between gap-3">
                      <span className="font-bold text-sm">נמצאו {filteredReportsList.length} דיווחים</span>
-                     <div className="flex flex-wrap gap-2"><button onClick={() => window.print()} className="text-xs font-bold flex items-center gap-1 bg-gray-800 text-white rounded-full px-3 py-1.5 hidden sm:flex"><Download className="w-3 h-3"/> הדפס (PDF)</button><button onClick={handleExportReports} className="text-xs font-bold flex items-center gap-1 bg-green-600 text-white rounded-full px-3 py-1.5"><Download className="w-3 h-3"/> ייצוא לאקסל</button></div>
+                     <div className="flex flex-wrap gap-2"><button type="button" onClick={() => window.print()} className="text-xs font-bold inline-flex items-center gap-1 bg-gray-800 text-white rounded-full px-3 py-1.5"><Download className="w-3 h-3"/> הדפס (PDF)</button><button type="button" onClick={handleExportReports} className="text-xs font-bold inline-flex items-center gap-1 bg-green-600 text-white rounded-full px-3 py-1.5"><Download className="w-3 h-3"/> ייצוא לאקסל</button></div>
                   </div>
                   <div className="md:hidden divide-y">
                     {filteredReportsList.map(rep => {
@@ -4324,6 +4363,7 @@ const App = () => {
           <button onClick={confirmDeleteSchedule} className="press px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded font-bold transition-colors">מחק שיעור</button>
         </div>
       </Modal>
+      {reportsPrintActive && <ReportsPrintView model={reportExportModel} />}
     </div>
   );
 }
