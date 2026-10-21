@@ -29,9 +29,11 @@ import {
 } from './lib/db';
 import { Teacher, Schedule, Report, EmailReminderSettings, Student, LessonType, AppSettings, AdminUser, HolidayPeriod } from './types';
 import StudentPicker from './components/StudentPicker';
+import ReceivedLessonsView from './components/ReceivedLessonsView';
 import StudentCard from './components/StudentCard';
 import {
   buildStudentNameField,
+  buildStudentPrivateLessonExport,
   compareHebrewNames,
   countStudentCompletedLessons,
   getLastAttendedStudentIds,
@@ -1647,6 +1649,33 @@ const App = () => {
     });
   }, [students, filterStudentClass, searchStudentName, studentListSort]);
 
+  const handleExportStudentLessons = () => {
+    const { lessons, summary } = buildStudentPrivateLessonExport({
+      students: filteredStudentsList,
+      reports,
+      schedules: schedule,
+      teachers,
+    });
+    if (lessons.length === 0) {
+      triggerNotification('אין שיעורים פרטניים לייצוא ברשימה הנוכחית', 'error');
+      return;
+    }
+    const lessonsSheet = XLSX.utils.json_to_sheet(lessons);
+    const summarySheet = XLSX.utils.json_to_sheet(summary);
+    lessonsSheet['!cols'] = [
+      { wch: 22 }, { wch: 12 }, { wch: 8 }, { wch: 14 }, { wch: 12 },
+      { wch: 10 }, { wch: 16 }, { wch: 20 }, { wch: 12 }, { wch: 40 },
+    ];
+    summarySheet['!cols'] = [
+      { wch: 22 }, { wch: 12 }, { wch: 8 }, { wch: 18 }, { wch: 16 }, { wch: 16 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, lessonsSheet, 'שיעורים');
+    XLSX.utils.book_append_sheet(wb, summarySheet, 'סיכום');
+    XLSX.writeFile(wb, `שיעורים_פרטניים_${formatDateInTZ(new Date(), ISRAEL_TIMEZONE)}.xlsx`);
+    triggerNotification(`יוצאו ${lessons.length} שיעורים עבור ${summary.length} תלמידים`);
+  };
+
   const toggleStudentListSort = (key: 'name' | 'class') => {
     setStudentListSort((prev) =>
       prev.key === key
@@ -1736,6 +1765,7 @@ const App = () => {
     overview: <TrendingUp className="w-4 h-4 shrink-0" />,
     teachers: <Users className="w-4 h-4 shrink-0" />,
     students: <GraduationCap className="w-4 h-4 shrink-0" />,
+    received: <ClipboardCheck className="w-4 h-4 shrink-0" />,
     schedule: <Calendar className="w-4 h-4 shrink-0" />,
     timetable: <Clock className="w-4 h-4 shrink-0" />,
     reports: <FileText className="w-4 h-4 shrink-0" />,
@@ -2840,6 +2870,9 @@ const App = () => {
                   <button onClick={handleExportStudents} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded text-sm flex items-center gap-1.5 shadow-sm">
                     <Download className="w-4 h-4"/> ייצוא לאקסל
                   </button>
+                  <button onClick={handleExportStudentLessons} className="px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white font-bold rounded text-sm flex items-center gap-1.5 shadow-sm" title="שורה לכל שיעור: תלמיד, תאריך, מורה, מקצוע וסטטוס">
+                    <Download className="w-4 h-4"/> ייצוא שיעורים שניתנו
+                  </button>
                 </div>
 
                 <AnimatePresence initial={false}>
@@ -2990,6 +3023,27 @@ const App = () => {
                         </div>
                   </>
                 </div>
+              </motion.div>
+            )}
+
+            {/* TAB: RECEIVED LESSONS */}
+            {adminTab === 'received' && (
+              <motion.div
+                key="admin-received"
+                variants={tabVariants}
+                initial="initial"
+                animate="enter"
+                exit="exit"
+                transition={tabTransition}
+                className="space-y-6"
+              >
+                <ReceivedLessonsView
+                  students={students}
+                  reports={reports}
+                  schedules={schedule}
+                  teachers={teachers}
+                  onNotify={triggerNotification}
+                />
               </motion.div>
             )}
 

@@ -1,4 +1,5 @@
 import { Report, Schedule, Student, Teacher } from '../types';
+import { formatHebrewDateShort, formatHourSlot } from './date-format';
 import { compareHebrewClassNames } from './grade-promotion';
 
 /** Hebrew alphabetical order for person names (א–ב). */
@@ -174,6 +175,83 @@ export function getStudentLessonDetails(params: {
   };
 }
 
+export interface ReceivedStudentRecord {
+  student: Student;
+  completedCount: number;
+  missedCount: number;
+  lessons: StudentLessonEntry[];
+  /** Newest completed lesson, if the student actually received one. */
+  lastCompleted: StudentLessonEntry | null;
+}
+
+function studentIdsOnReport(report: Report, schedule: Schedule | undefined): string[] {
+  if (report.status === 'completed') {
+    if (report.attendedStudentIds?.length) return report.attendedStudentIds;
+    return schedule?.studentIds ?? [];
+  }
+  if (report.status === 'missed') return schedule?.studentIds ?? [];
+  return [];
+}
+
+/** Students who received at least one completed private lesson, with their full documented history. */
+export function indexReceivedStudents(params: {
+  students: Student[];
+  reports: Report[];
+  schedules: Schedule[];
+  teachers: Teacher[];
+}): ReceivedStudentRecord[] {
+  const { students, reports, schedules, teachers } = params;
+  const studentById = new Map(students.map((s) => [s.id, s]));
+  const scheduleById = new Map(schedules.map((s) => [s.id, s]));
+  const teacherById = new Map(teachers.map((t) => [t.id, t]));
+  const lessonsByStudent = new Map<string, StudentLessonEntry[]>();
+
+  for (const report of reports) {
+    const schedule = scheduleById.get(report.scheduleId);
+    const ids = [...new Set(studentIdsOnReport(report, schedule))];
+    if (ids.length === 0) continue;
+    const entry: StudentLessonEntry = {
+      reportId: report.id,
+      date: report.date,
+      status: report.status,
+      hour: schedule?.hour ?? '—',
+      subject: schedule?.subject ?? '—',
+      teacherName: teacherById.get(report.teacherId)?.name ?? '—',
+      scheduleDay: schedule?.day ?? '—',
+      text: report.text,
+    };
+    for (const studentId of ids) {
+      if (!studentById.has(studentId)) continue;
+      const bucket = lessonsByStudent.get(studentId);
+      if (bucket) bucket.push(entry);
+      else lessonsByStudent.set(studentId, [entry]);
+    }
+  }
+
+  const records: ReceivedStudentRecord[] = [];
+  for (const [studentId, lessons] of lessonsByStudent) {
+    const student = studentById.get(studentId);
+    if (!student) continue;
+    lessons.sort((a, b) => b.date.localeCompare(a.date) || b.reportId.localeCompare(a.reportId));
+    const completedCount = lessons.filter((l) => l.status === 'completed').length;
+    if (completedCount === 0) continue;
+    records.push({
+      student,
+      completedCount,
+      missedCount: lessons.length - completedCount,
+      lessons,
+      lastCompleted: lessons.find((l) => l.status === 'completed') ?? null,
+    });
+  }
+
+  records.sort((a, b) => {
+    const byName = compareHebrewNames(a.student.name, b.student.name);
+    if (byName !== 0) return byName;
+    return compareHebrewClassNames(a.student.className, b.student.className);
+  });
+  return records;
+}
+
 export function countStudentCompletedLessons(
   studentId: string,
   reports: Report[],
@@ -183,4 +261,84 @@ export function countStudentCompletedLessons(
   return reports.filter((r) =>
     reportInvolvesStudent(r, scheduleById.get(r.scheduleId), studentId),
   ).length;
+}
+
+export interface StudentLessonExportRow {
+  'שם תלמיד': string;
+  'כיתה': string;
+  'פעיל': string;
+  'תאריך': string;
+  'יום': string;
+  'שעה': string;
+  'מקצוע': string;
+  'מורה': string;
+  'סטטוס': string;
+  'פירוט': string;
+}
+
+export interface StudentLessonSummaryExportRow {
+  'שם תלמיד': string;
+  'כיתה': string;
+  'פעיל': string;
+  'שעות שהתקיימו': number;
+  'שעות שבוטלו': number;
+  'סה״כ שיעורים': number;
+}
+
+/** One row per documented private lesson, plus a per-student summary. Students with no lessons are omitted. */
+export function buildStudentPrivateLessonExport(params: {
+  students: Student[];
+  reports: Report[];
+  schedules: Schedule[];
+  teachers: Teacher[];
+  startStr?: string;
+  endStr?: string;
+}): { lessons: StudentLessonExportRow[]; summary: StudentLessonSummaryExportRow[] } {
+  const lessons: StudentLessonExportRow[] = [];
+  const summary: StudentLessonSummaryExportRow[] = [];
+
+  const ordered = [...params.students].sort((a, b) => {
+    const byName = compareHebrewNames(a.name, b.name);
+    if (byName !== 0) return byName;
+    return compareHebrewClassNames(a.className, b.className);
+  });
+
+  for (const student of ordered) {
+    const details = getStudentLessonDetails({
+      studentId: student.id,
+      reports: params.reports,
+      schedules: params.schedules,
+      teachers: params.teachers,
+      startStr: params.startStr,
+      endStr: params.endStr,
+    });
+    if (details.lessons.length === 0) continue;
+
+    summary.push({
+      'שם תלמיד': student.name,
+      'כיתה': student.className,
+      'פעיל': student.active ? 'כן' : 'לא',
+      'שעות שהתקיימו': details.completedCount,
+      'שעות שבוטלו': details.missedCount,
+      'סה״כ שיעורים': details.totalCount,
+    });
+
+    for (const lesson of details.lessons) {
+      const hour = lesson.hour && lesson.hour !== '—' ? formatHourSlot(lesson.hour) : '—';
+      lessons.push({
+        'שם תלמיד': student.name,
+        'כיתה': student.className,
+        'פעיל': student.active ? 'כן' : 'לא',
+        'תאריך': formatHebrewDateShort(lesson.date),
+        'יום': lesson.scheduleDay,
+        'שעה': hour,
+        'מקצוע': lesson.subject,
+        'מורה': lesson.teacherName,
+        'סטטוס': lesson.status === 'completed' ? 'התקיים' : 'בוטל',
+        'פירוט': lesson.text || '',
+      });
+    }
+  }
+
+  return { lessons, summary };
 }

@@ -4,6 +4,7 @@ export type AdminTabId =
   | 'overview'
   | 'teachers'
   | 'students'
+  | 'received'
   | 'schedule'
   | 'timetable'
   | 'reports'
@@ -21,6 +22,7 @@ export const ADMIN_NAV_ITEMS: AdminNavItem[] = [
   { id: 'overview', label: 'סטטיסטיקה', shortLabel: 'סטטיסטיקה' },
   { id: 'teachers', label: 'מורים', shortLabel: 'מורים' },
   { id: 'students', label: 'תלמידים', shortLabel: 'תלמידים' },
+  { id: 'received', label: 'שיעורים שניתנו', shortLabel: 'שניתנו' },
   { id: 'schedule', label: 'שיבוץ שיעורים', shortLabel: 'שיבוץ' },
   { id: 'timetable', label: 'לוח שבועי', shortLabel: 'לוח שבועי' },
   { id: 'reports', label: 'דיווחים', shortLabel: 'דיווחים' },
@@ -36,6 +38,7 @@ export type AdminNavIconKey =
   | 'overview'
   | 'teachers'
   | 'students'
+  | 'received'
   | 'schedule'
   | 'timetable'
   | 'reports'
