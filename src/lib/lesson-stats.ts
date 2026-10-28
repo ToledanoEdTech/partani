@@ -7,7 +7,7 @@
  */
 
 import type { Report, Schedule, Teacher } from '../types';
-import { isHolidayDate } from './holidays';
+import { isHolidayDate } from './holidays.js';
 
 export const ISRAEL_TIMEZONE = 'Asia/Jerusalem';
 
